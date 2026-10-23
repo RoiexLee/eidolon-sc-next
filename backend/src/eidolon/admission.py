@@ -107,6 +107,29 @@ class Admission(Generic[K]):
                 self.keys.release()
 
 
+class GroupAdmission:
+    """A group text turn's usage lease, without a single-character activity record."""
+
+    def __init__(self, keys: TurnKeys, use: Use) -> None:
+        self.keys = keys
+        self._use = use
+        self._settled = False
+
+    @property
+    def llms(self) -> TurnLLMs:
+        return self.keys.llms
+
+    async def settle(self, result: Result) -> None:
+        if self._settled:
+            return
+        self._settled = True
+        try:
+            if result not in {"success", "left"}:
+                await self._use.give_back()
+        finally:
+            self.keys.release()
+
+
 class Admissions:
     """Lets the users' turns and calls begin, on the limits and keys of the moment."""
 
@@ -153,6 +176,16 @@ class Admissions:
         neither does the call bring them; CoolingDown as a turn does."""
         await self.refuse_while_cooling(user_id, character_id)
         return await self._admit("call", user_id, character_id, self._own_keys.for_call(brought))
+
+    async def group_turn(self, user_id: str, brought: BroughtKeys) -> GroupAdmission:
+        """Let a group text turn begin, charging one shared text use and no activity row."""
+        keys = self._own_keys.for_turn(brought)
+        try:
+            use = await self._usage.take(user_id, "turn", exempt=keys.exempt)
+        except BaseException:
+            keys.release()
+            raise
+        return GroupAdmission(keys, use)
 
     async def admitted(
         self,

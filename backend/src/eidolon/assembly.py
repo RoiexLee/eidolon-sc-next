@@ -41,6 +41,7 @@ from eidolon.characters import Character, load_characters
 from eidolon.gift_catalog import Gift, check_liked_gifts, gifts_path, load_gift_catalog
 from eidolon.gifts import Gifts
 from eidolon.group_store import GroupStore
+from eidolon.group_engine import GroupTurnEngine
 from eidolon.happenings import Happenings
 from eidolon.hot_words import hot_words
 from eidolon.housekeeping import keep_tidy
@@ -108,6 +109,7 @@ class Backend:
     titles: Titles
     """Names conversations after their third turn."""
     engine: ConversationEngine
+    group_engine: GroupTurnEngine
     usage: UsageLimiter
     clock: Clock
     calls: Calls
@@ -373,6 +375,9 @@ def build(
         lambda: config.history_turns, world, affinities, config.affinity_judge(), photos,
         happenings,
     )
+    group_engine = GroupTurnEngine(
+        store, group_store, characters, clock, world, config.history_turns,
+    )
     own_keys = OwnKeys(
         own_llm_service, config, activity, speech, exempting=lambda: config.exempting_keys,
         image_service=own_images,
@@ -403,6 +408,7 @@ def build(
         memories=memories,
         titles=titles,
         engine=engine,
+        group_engine=group_engine,
         usage=usage,
         clock=clock,
         calls=calls,

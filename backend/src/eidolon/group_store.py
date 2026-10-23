@@ -5,6 +5,7 @@ not share the single-character ``Store`` records: a removed character must remai
 as the author of old group messages.
 """
 
+import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from collections.abc import Mapping, Sequence
 
 from eidolon.data_access import Database
 from eidolon.database import by_name, delete_group_data
+from eidolon.reply_format import Segment
+from eidolon.delivery_cues import without_cues
 
 MIN_MEMBERS = 2
 MAX_MEMBERS = 5
@@ -61,7 +64,8 @@ CREATE TABLE IF NOT EXISTS group_turns (
     client_idempotency_key TEXT,
     started_at TEXT NOT NULL,
     ended_at TEXT,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    request_fingerprint TEXT
 );
 CREATE INDEX IF NOT EXISTS group_turns_by_group ON group_turns(group_id, started_at);
 """
@@ -88,6 +92,63 @@ class GroupMessageSummary:
     author_name_snapshot: str | None
     text: str | None
     created_at: str
+
+
+@dataclass(frozen=True)
+class GroupMessage:
+    id: int
+    group_id: str
+    turn_id: str | None
+    author_kind: str
+    author_character_id: str | None
+    author_name_snapshot: str | None
+    text: str | None
+    ja: str | None
+    zh: str | None
+    segments: list[Segment]
+    created_at: str
+    reply_to_message_id: int | None
+    mentions: tuple[str, ...]
+
+    def shown(self) -> dict:
+        segments = [
+            {"ja": without_cues(segment.ja), "zh": without_cues(segment.zh)}
+            for segment in self.segments
+        ]
+        return {
+            "id": self.id,
+            "group_id": self.group_id,
+            "turn_id": self.turn_id,
+            "author_kind": self.author_kind,
+            "author_character_id": self.author_character_id,
+            "author_name_snapshot": self.author_name_snapshot,
+            "text": self.text,
+            "ja": None if self.ja is None else without_cues(self.ja),
+            "zh": None if self.zh is None else without_cues(self.zh),
+            "segments": segments,
+            "created_at": self.created_at,
+            "reply_to_message_id": self.reply_to_message_id,
+            "mentions": list(self.mentions),
+        }
+
+
+@dataclass(frozen=True)
+class GroupTurn:
+    id: str
+    group_id: str
+    client_idempotency_key: str | None
+    started_at: str
+    ended_at: str | None
+    status: str
+    request_fingerprint: str | None = None
+
+
+class GroupTurnBusy(RuntimeError):
+    """A different group turn is already being generated."""
+
+
+class GroupTurnConflict(RuntimeError):
+    """An idempotency key belongs to a different request or completed turn."""
 
 
 @dataclass(frozen=True)
@@ -178,9 +239,54 @@ class GroupStore:
     async def delete_group(self, user_id: str, group_id: str) -> bool:
         return await self._db.write(_delete_group, user_id, group_id)
 
+    async def messages(self, user_id: str, group_id: str) -> list[GroupMessage]:
+        return await self._db.read(_messages, user_id, group_id)
+
+    async def message(self, user_id: str, group_id: str, message_id: int) -> GroupMessage | None:
+        return await self._db.read(_message, user_id, group_id, message_id)
+
+    async def start_turn(
+        self, user_id: str, group_id: str, client_idempotency_key: str | None = None,
+        request_fingerprint: str | None = None,
+    ) -> GroupTurn:
+        return await self._db.write(
+            _start_turn, user_id, group_id, client_idempotency_key, request_fingerprint
+        )
+
+    async def finish_turn(
+        self,
+        turn_id: str,
+        text: str,
+        target: GroupMember,
+        reply: list[Segment],
+        *,
+        reply_to_message_id: int | None = None,
+        mentions: Sequence[str] = (),
+    ) -> tuple[GroupMessage, GroupMessage]:
+        return await self._db.write(
+            _finish_turn, turn_id, text, target, reply, reply_to_message_id, tuple(mentions)
+        )
+
+    async def fail_turn(self, turn_id: str) -> None:
+        await self._db.write(_fail_turn, turn_id)
+
+    async def turn_for_key(
+        self, user_id: str, group_id: str, client_idempotency_key: str
+    ) -> GroupTurn | None:
+        return await self._db.read(_turn_for_key, user_id, group_id, client_idempotency_key)
+
 
 def _open(db: sqlite3.Connection) -> None:
     db.executescript(_SCHEMA)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(group_turns)")}
+    if "request_fingerprint" not in columns:
+        db.execute("ALTER TABLE group_turns ADD COLUMN request_fingerprint TEXT")
+    # A model stream cannot survive a process restart, so do not leave its lease blocking
+    # the group forever.
+    db.execute(
+        "UPDATE group_turns SET ended_at = ?, status = 'failed' WHERE status = 'running'",
+        (_now(),),
+    )
 
 
 def _now() -> str:
@@ -273,6 +379,10 @@ def _update_group(
     cursor = by_name(db)
     if cursor.execute("SELECT 1 FROM group_conversations WHERE id = ? AND user_id = ?", (group_id, user_id)).fetchone() is None:
         raise GroupNotFound
+    if cursor.execute(
+        "SELECT 1 FROM group_turns WHERE group_id = ? AND status = 'running' LIMIT 1", (group_id,)
+    ).fetchone() is not None:
+        raise GroupTurnBusy("群组正在回复，请稍后再试")
     rows = cursor.execute(
         "SELECT character_id, position, removed_at FROM group_members WHERE group_id = ?", (group_id,)
     ).fetchall()
@@ -306,5 +416,160 @@ def _update_group(
 def _delete_group(db: sqlite3.Connection, user_id: str, group_id: str) -> bool:
     if db.execute("SELECT 1 FROM group_conversations WHERE id = ? AND user_id = ?", (group_id, user_id)).fetchone() is None:
         return False
+    if db.execute(
+        "SELECT 1 FROM group_turns WHERE group_id = ? AND status = 'running' LIMIT 1", (group_id,)
+    ).fetchone() is not None:
+        raise GroupTurnBusy("群组正在回复，请稍后再试")
     delete_group_data(db, group_id)
     return True
+
+
+def _decode_message(row: sqlite3.Row) -> GroupMessage:
+    raw_segments = json.loads(row["segments"] or "[]")
+    return GroupMessage(
+        row["id"], row["group_id"], row["turn_id"], row["author_kind"],
+        row["author_character_id"], row["author_name_snapshot"], row["text"],
+        row["ja"], row["zh"], [Segment(**segment) for segment in raw_segments],
+        row["created_at"], row["reply_to_message_id"],
+        tuple(json.loads(row["mentions"] or "[]")),
+    )
+
+
+def _messages(db: sqlite3.Connection, user_id: str, group_id: str) -> list[GroupMessage]:
+    if db.execute(
+        "SELECT 1 FROM group_conversations WHERE id = ? AND user_id = ?", (group_id, user_id)
+    ).fetchone() is None:
+        raise GroupNotFound
+    rows = by_name(db).execute(
+        "SELECT id, group_id, turn_id, author_kind, author_character_id, author_name_snapshot, "
+        "text, ja, zh, segments, created_at, reply_to_message_id, mentions "
+        "FROM group_messages WHERE group_id = ? ORDER BY id", (group_id,)
+    ).fetchall()
+    return [_decode_message(row) for row in rows]
+
+
+def _message(
+    db: sqlite3.Connection, user_id: str, group_id: str, message_id: int
+) -> GroupMessage | None:
+    if db.execute(
+        "SELECT 1 FROM group_conversations WHERE id = ? AND user_id = ?", (group_id, user_id)
+    ).fetchone() is None:
+        raise GroupNotFound
+    row = by_name(db).execute(
+        "SELECT id, group_id, turn_id, author_kind, author_character_id, author_name_snapshot, "
+        "text, ja, zh, segments, created_at, reply_to_message_id, mentions "
+        "FROM group_messages WHERE group_id = ? AND id = ?", (group_id, message_id)
+    ).fetchone()
+    return None if row is None else _decode_message(row)
+
+
+def _start_turn(
+    db: sqlite3.Connection, user_id: str, group_id: str, client_key: str | None,
+    request_fingerprint: str | None,
+) -> GroupTurn:
+    cursor = by_name(db)
+    if cursor.execute(
+        "SELECT 1 FROM group_conversations WHERE id = ? AND user_id = ?", (group_id, user_id)
+    ).fetchone() is None:
+        raise GroupNotFound
+    if client_key is not None:
+        row = cursor.execute(
+            "SELECT id, group_id, client_idempotency_key, started_at, ended_at, status, request_fingerprint "
+            "FROM group_turns WHERE group_id = ? AND client_idempotency_key = ?",
+            (group_id, client_key),
+        ).fetchone()
+        if row is not None:
+            if row["request_fingerprint"] != request_fingerprint:
+                raise GroupTurnConflict("幂等键已经用于另一条群组回合")
+            if row["status"] == "running":
+                raise GroupTurnBusy("群组正在回复，请稍后再试")
+            return GroupTurn(*row)
+    row = cursor.execute(
+        "SELECT id FROM group_turns WHERE group_id = ? AND status = 'running' LIMIT 1", (group_id,)
+    ).fetchone()
+    if row is not None:
+        raise GroupTurnBusy("群组正在回复，请稍后再试")
+    now = _now()
+    turn_id = uuid.uuid4().hex
+    cursor.execute(
+        "INSERT INTO group_turns(id, group_id, client_idempotency_key, started_at, status) "
+        "VALUES (?, ?, ?, ?, 'running')", (turn_id, group_id, client_key, now)
+    )
+    if request_fingerprint is not None:
+        cursor.execute(
+            "UPDATE group_turns SET request_fingerprint = ? WHERE id = ?",
+            (request_fingerprint, turn_id),
+        )
+    return GroupTurn(turn_id, group_id, client_key, now, None, "running", request_fingerprint)
+
+
+def _finish_turn(
+    db: sqlite3.Connection,
+    turn_id: str,
+    text: str,
+    target: GroupMember,
+    reply: list[Segment],
+    reply_to_message_id: int | None,
+    mentions: Sequence[str],
+) -> tuple[GroupMessage, GroupMessage]:
+    cursor = by_name(db)
+    turn = cursor.execute(
+        "SELECT id, group_id, status FROM group_turns WHERE id = ?", (turn_id,)
+    ).fetchone()
+    if turn is None or turn["status"] != "running":
+        raise GroupTurnConflict("群组回合已经结束")
+    now = _now()
+    user_cursor = cursor.execute(
+        "INSERT INTO group_messages(group_id, turn_id, author_kind, text, created_at, "
+        "reply_to_message_id, mentions) VALUES (?, ?, 'user', ?, ?, ?, ?)",
+        (turn["group_id"], turn_id, text, now, reply_to_message_id, json.dumps(list(mentions))),
+    )
+    assert user_cursor.lastrowid is not None
+    user = GroupMessage(
+        user_cursor.lastrowid, turn["group_id"], turn_id, "user", None, None, text,
+        None, None, [], now, reply_to_message_id, tuple(mentions),
+    )
+    ja = "".join(segment.ja for segment in reply)
+    zh = "".join(segment.zh for segment in reply)
+    character_cursor = cursor.execute(
+        "INSERT INTO group_messages(group_id, turn_id, author_kind, author_character_id, "
+        "author_name_snapshot, ja, zh, segments, created_at, mentions) "
+        "VALUES (?, ?, 'character', ?, ?, ?, ?, ?, ?, ?)",
+        (
+            turn["group_id"], turn_id, target.character_id, target.name_snapshot, ja, zh,
+            json.dumps([{"ja": segment.ja, "zh": segment.zh} for segment in reply], ensure_ascii=False),
+            now, json.dumps(list(mentions)),
+        ),
+    )
+    assert character_cursor.lastrowid is not None
+    character = GroupMessage(
+        character_cursor.lastrowid, turn["group_id"], turn_id, "character", target.character_id,
+        target.name_snapshot, None, ja, zh, reply, now, None, tuple(mentions),
+    )
+    cursor.execute(
+        "UPDATE group_turns SET ended_at = ?, status = 'done' WHERE id = ?", (now, turn_id)
+    )
+    cursor.execute(
+        "UPDATE group_conversations SET updated_at = ? WHERE id = ?", (now, turn["group_id"])
+    )
+    return user, character
+
+
+def _fail_turn(db: sqlite3.Connection, turn_id: str) -> None:
+    db.execute(
+        "UPDATE group_turns SET ended_at = ?, status = 'failed' "
+        "WHERE id = ? AND status = 'running'", (_now(), turn_id)
+    )
+
+
+def _turn_for_key(
+    db: sqlite3.Connection, user_id: str, group_id: str, client_key: str
+) -> GroupTurn | None:
+    row = by_name(db).execute(
+        "SELECT t.id, t.group_id, t.client_idempotency_key, t.started_at, t.ended_at, "
+        "t.status, t.request_fingerprint FROM group_turns t "
+        "JOIN group_conversations g ON g.id = t.group_id "
+        "WHERE t.group_id = ? AND g.user_id = ? AND t.client_idempotency_key = ?",
+        (group_id, user_id, client_key),
+    ).fetchone()
+    return None if row is None else GroupTurn(*row)
