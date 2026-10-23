@@ -15,7 +15,15 @@ from starlette.types import Receive, Scope, Send
 from eidolon.activity import Result
 from eidolon.assembly import Backend
 from eidolon.account_api import OwnKeysInput
-from eidolon.group_engine import GroupSpeaker, GroupTurnDone, GroupTurnEngine, GroupTurnError, GroupUserSaid
+from eidolon.group_engine import (
+    _GroupTurnPrimary,
+    GroupSpeaker,
+    GroupTurnDone,
+    GroupTurnEngine,
+    GroupTurnError,
+    GroupTurnPartial,
+    GroupUserSaid,
+)
 from eidolon.group_store import (
     GroupConversation,
     GroupMember,
@@ -229,28 +237,44 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
                     raise
 
         settled = False
+        primary_committed = False
+        turn_completed = turn.status == "done"
 
         async def settle(result: Result) -> None:
-            nonlocal settled
+            nonlocal settled, turn_completed
             if settled:
                 return
             settled = True
-            if result != "success":
+            if primary_committed:
+                result = "success"
+                if not turn_completed:
+                    await groups.complete_turn(turn.id)
+                    turn_completed = True
+            elif result != "success":
                 await groups.fail_turn(turn.id)
             if admission is not None:
                 await admission.settle(result)  # type: ignore[union-attr]
 
         async def events() -> AsyncIterator[str]:
+            nonlocal primary_committed
             try:
                 if turn.status == "done":
                     messages = await groups.messages(user_id, group_id)
-                    result = next((m for m in messages if m.turn_id == turn.id and m.author_kind == "character"), None)
+                    results = [m for m in messages if m.turn_id == turn.id and m.author_kind == "character"]
+                    result = results[0] if results else None
                     if result is None:
                         raise RuntimeError("群组回合结果缺失")
                     yield _sse({"type": "user", "text": text})
-                    yield _sse({"type": "speaker", "author_character_id": result.author_character_id, "author_name_snapshot": result.author_name_snapshot})
+                    for message in results:
+                        yield _sse({"type": "speaker", "author_character_id": message.author_character_id, "author_name_snapshot": message.author_name_snapshot})
                     await settle("success")
-                    yield _sse({"type": "done", "turn_id": turn.id, "message": result.shown()})
+                    yield _sse({
+                        "type": "done",
+                        "turn_id": turn.id,
+                        "message": result.shown(),
+                        "messages": [message.shown() for message in results],
+                        "partial": False,
+                    })
                     return
                 assert target is not None
                 async with aclosing(engine.turn(
@@ -264,9 +288,24 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
                             yield _sse(asdict(event))
                         elif isinstance(event, SegmentDelta):
                             yield _sse(asdict(event))
+                        elif isinstance(event, GroupTurnPartial):
+                            yield _sse({
+                                "type": "partial",
+                                "message": event.message.shown(),
+                                "messages": [event.message.shown()],
+                                "error": event.error,
+                            })
+                        elif isinstance(event, _GroupTurnPrimary):
+                            primary_committed = True
                         elif isinstance(event, GroupTurnDone):
                             await settle("success")
-                            yield _sse({"type": "done", "turn_id": event.turn_id, "message": event.message.shown()})
+                            yield _sse({
+                                "type": "done",
+                                "turn_id": event.turn_id,
+                                "message": event.message.shown(),
+                                "messages": [message.shown() for message in event.messages] or [event.message.shown()],
+                                "partial": event.partial,
+                            })
                         elif isinstance(event, GroupTurnError):
                             await settle("failed")
                             yield _sse(asdict(event))

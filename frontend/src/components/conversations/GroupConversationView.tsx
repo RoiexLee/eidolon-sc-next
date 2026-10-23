@@ -37,6 +37,7 @@ export function GroupConversationView({
   const [group, setGroup] = useState<GroupConversation | null>(null);
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
+  const [partialNotice, setPartialNotice] = useState<string | null>(null);
   const [targetId, setTargetId] = useState<string | null>(null);
   const [replyId, setReplyId] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
@@ -50,6 +51,7 @@ export function GroupConversationView({
     setGroup(null);
     setMessages([]);
     setFailure(null);
+    setPartialNotice(null);
     void Promise.all([getGroup(groupId), listGroupMessages(groupId)])
       .then(([nextGroup, nextMessages]) => {
         if (!active) return;
@@ -72,6 +74,7 @@ export function GroupConversationView({
     if (!text || !group || !targetId || sending) return;
     setSending(true);
     setFailure(null);
+    setPartialNotice(null);
     setPendingText(text);
     setDraft("");
     setSpeaker(null);
@@ -97,7 +100,11 @@ export function GroupConversationView({
             [event.lang]: current[event.lang] + event.text,
           }));
         }
+        else if (event.type === "partial") {
+          setPartialNotice(event.error || t.partial);
+        }
         else if (event.type === "done") {
+          const roleMessages = event.messages?.length ? event.messages : [event.message];
           setMessages((current) => [
             ...current,
             {
@@ -115,8 +122,9 @@ export function GroupConversationView({
               reply_to_message_id: replyId,
               mentions: targetId === ROUND_ROBIN_TARGET ? [] : [targetId],
             },
-            event.message,
+            ...roleMessages,
           ]);
+          if (event.partial) setPartialNotice(t.partial);
           setPendingText(null);
           setStreamingText({ ja: "", zh: "" });
           setReplyId(null);
@@ -175,7 +183,11 @@ export function GroupConversationView({
                 message={message}
                 messages={messages}
                 character={message.author_character_id ? characterById.get(message.author_character_id) : undefined}
-                onReply={() => message.author_kind === "character" && setReplyId(message.id)}
+                onReply={() => {
+                  if (message.author_kind !== "character") return;
+                  setReplyId(message.id);
+                  if (message.author_character_id) setTargetId(message.author_character_id);
+                }}
               />
             ))}
             {pendingText !== null && (
@@ -240,6 +252,7 @@ export function GroupConversationView({
           </Button>
         </div>
         {failure && <p role="alert" className="text-meta text-destructive">{failure}</p>}
+        {partialNotice && <p role="status" className="text-meta text-muted-foreground">{partialNotice}</p>}
       </form>
     </div>
   );

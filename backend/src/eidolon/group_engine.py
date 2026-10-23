@@ -7,10 +7,17 @@ from dataclasses import dataclass, field
 from eidolon.characters import Character
 from eidolon.clock import Clock
 from eidolon.own_keys import OwnKeyFailed
-from eidolon.group_store import GroupConversation, GroupMember, GroupMessage, GroupStore, GroupTurn
+from eidolon.group_store import (
+    GroupConversation,
+    GroupMember,
+    GroupMessage,
+    GroupStore,
+    GroupTurn,
+    round_robin_member,
+)
 from eidolon.llm import ChatMessage, TurnLLMs
 from eidolon.producer import effective_timezone, local_date, producer_prompt
-from eidolon.reply_format import ReplyParser, SegmentComplete, SegmentDelta, format_instructions, format_reply
+from eidolon.reply_format import Segment, ReplyParser, SegmentComplete, SegmentDelta, format_instructions, format_reply
 from eidolon.store import Store
 from eidolon.world import World
 
@@ -39,7 +46,26 @@ class GroupSpeaker:
 class GroupTurnDone:
     message: GroupMessage
     turn_id: str
+    messages: tuple[GroupMessage, ...] = ()
+    partial: bool = False
     type: str = field(default="done", init=False)
+
+
+@dataclass(frozen=True)
+class GroupTurnPartial:
+    message: GroupMessage
+    error: str
+    type: str = field(default="partial", init=False)
+
+
+@dataclass(frozen=True)
+class _GroupTurnPrimary:
+    message: GroupMessage
+
+
+@dataclass(frozen=True)
+class _ReplyComplete:
+    reply: list[Segment]
 
 
 @dataclass(frozen=True)
@@ -86,40 +112,63 @@ class GroupTurnEngine:
             history = await self._groups.messages(group.user_id, group.id)
             profile = await self._store.get_profile(group.user_id)
             prompt = self._prompt(group, target, history, text, profile, reply_to_message_id)
-            parser = ReplyParser()
-            speaker_sent = False
-            stream = llms.chat.stream(prompt)
-            try:
-                async for item in stream:
-                    if not isinstance(item, str):
-                        continue
-                    for event in parser.feed(item):
-                        if isinstance(event, SegmentComplete):
-                            continue
-                        if isinstance(event, SegmentDelta):
-                            if not speaker_sent:
-                                speaker_sent = True
-                                yield GroupSpeaker(target.character_id, target.name_snapshot)
-                            yield event
-            finally:
-                close = getattr(stream, "aclose", None)
-                if close is not None:
-                    await close()
-            for event in parser.finish():
-                if isinstance(event, SegmentDelta):
-                    if not speaker_sent:
-                        speaker_sent = True
-                        yield GroupSpeaker(target.character_id, target.name_snapshot)
+            reply = None
+            async for event in self._reply_events(prompt, target, llms):
+                if isinstance(event, _ReplyComplete):
+                    reply = event.reply
+                else:
                     yield event
-            reply = parser.complete
-            if not reply:
-                raise RuntimeError("群组模型没有返回任何内容")
+            assert reply is not None
             _, character = await self._groups.finish_turn(
                 turn.id, text, target, reply,
                 reply_to_message_id=reply_to_message_id,
                 mentions=mentions,
+                finalize=False,
             )
-            yield GroupTurnDone(character, turn.id)
+            yield _GroupTurnPrimary(character)
+            messages = [character]
+            try:
+                latest_group = await self._groups.get_group(group.id, group.user_id)
+                if latest_group is None:
+                    raise RuntimeError("群组不存在")
+                latest_messages = await self._groups.messages(group.user_id, group.id)
+                extra_target = round_robin_member(latest_group.current_members, latest_messages)
+                append_prompt = self._prompt(
+                    latest_group,
+                    extra_target,
+                    latest_messages,
+                    "请接着群组里的上一条消息，自然地回复一条简短消息。",
+                    profile,
+                    character.id,
+                )
+                append_reply = None
+                async for event in self._reply_events(append_prompt, extra_target, llms):
+                    if isinstance(event, _ReplyComplete):
+                        append_reply = event.reply
+                    else:
+                        yield event
+                assert append_reply is not None
+                extra = await self._groups.append_character_message(
+                    turn.id,
+                    extra_target,
+                    append_reply,
+                    reply_to_message_id=character.id,
+                )
+                messages.append(extra)
+            except OwnKeyFailed as error:
+                log.warning("group follow-up failed on the user's own key in %s: %s", group.id, error.service)
+                await self._groups.complete_turn(turn.id)
+                yield GroupTurnPartial(character, error.message)
+                yield GroupTurnDone(character, turn.id, tuple(messages), True)
+                return
+            except Exception:
+                log.exception("group follow-up failed in %s", group.id)
+                await self._groups.complete_turn(turn.id)
+                yield GroupTurnPartial(character, FAILED)
+                yield GroupTurnDone(character, turn.id, tuple(messages), True)
+                return
+            await self._groups.complete_turn(turn.id)
+            yield GroupTurnDone(messages[0], turn.id, tuple(messages), False)
         except OwnKeyFailed as error:
             log.warning("group turn failed on the user's own key in %s: %s", group.id, error.service)
             await self._groups.fail_turn(turn.id)
@@ -128,6 +177,42 @@ class GroupTurnEngine:
             log.exception("group turn failed in %s", group.id)
             await self._groups.fail_turn(turn.id)
             yield GroupTurnError(FAILED)
+
+    async def _reply_events(
+        self,
+        prompt: list[ChatMessage],
+        target: GroupMember,
+        llms: TurnLLMs,
+    ) -> AsyncGenerator[object, None]:
+        parser = ReplyParser()
+        speaker_sent = False
+        stream = llms.chat.stream(prompt)
+        try:
+            async for item in stream:
+                if not isinstance(item, str):
+                    continue
+                for event in parser.feed(item):
+                    if isinstance(event, SegmentComplete):
+                        continue
+                    if isinstance(event, SegmentDelta):
+                        if not speaker_sent:
+                            speaker_sent = True
+                            yield GroupSpeaker(target.character_id, target.name_snapshot)
+                        yield event
+        finally:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                await close()
+        for event in parser.finish():
+            if isinstance(event, SegmentDelta):
+                if not speaker_sent:
+                    speaker_sent = True
+                    yield GroupSpeaker(target.character_id, target.name_snapshot)
+                yield event
+        reply = parser.complete
+        if not reply:
+            raise RuntimeError("群组模型没有返回任何内容")
+        yield _ReplyComplete(reply)
 
     def _prompt(
         self,

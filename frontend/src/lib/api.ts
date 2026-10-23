@@ -148,7 +148,8 @@ export type GroupTurnEvent =
   | { type: "user"; text: string }
   | { type: "speaker"; author_character_id: string; author_name_snapshot: string }
   | { type: "delta"; segment: number; lang: "ja" | "zh"; text: string }
-  | { type: "done"; turn_id: string; message: GroupMessage }
+  | { type: "done"; turn_id: string; message: GroupMessage; messages?: GroupMessage[]; partial?: boolean }
+  | { type: "partial"; message: GroupMessage; messages?: GroupMessage[]; error: string }
   | { type: "error"; message: string };
 
 /** The last thing in a conversation as a list shows it, a message (without delivery cues),

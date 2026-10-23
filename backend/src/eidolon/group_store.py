@@ -185,18 +185,26 @@ class GroupMemberNotFound(LookupError):
 def round_robin_member(
     current_members: Sequence[GroupMember], messages: Sequence[GroupMessage]
 ) -> GroupMember:
-    """Choose the next current member after the latest character message."""
+    """Choose the next current member after the latest user's primary speaker."""
     if not current_members:
         raise GroupMembersInvalid("群组必须有 2 至 5 位成员")
     by_id = {member.character_id: member for member in current_members}
-    previous_id = next(
-        (
-            message.author_character_id
-            for message in reversed(messages)
-            if message.author_kind == "character" and message.author_character_id is not None
-        ),
-        None,
-    )
+    previous_id = None
+    user_indexes = [index for index, message in enumerate(messages) if message.author_kind == "user"]
+    if user_indexes:
+        for message in messages[user_indexes[-1] + 1 :]:
+            if message.author_kind == "character" and message.author_character_id is not None:
+                previous_id = message.author_character_id
+                break
+    else:
+        previous_id = next(
+            (
+                message.author_character_id
+                for message in reversed(messages)
+                if message.author_kind == "character" and message.author_character_id is not None
+            ),
+            None,
+        )
     if previous_id not in by_id:
         return current_members[0]
     previous_index = next(
@@ -285,10 +293,28 @@ class GroupStore:
         *,
         reply_to_message_id: int | None = None,
         mentions: Sequence[str] = (),
+        finalize: bool = True,
     ) -> tuple[GroupMessage, GroupMessage]:
         return await self._db.write(
-            _finish_turn, turn_id, text, target, reply, reply_to_message_id, tuple(mentions)
+            _finish_turn, turn_id, text, target, reply, reply_to_message_id, tuple(mentions), finalize
         )
+
+    async def append_character_message(
+        self,
+        turn_id: str,
+        target: GroupMember,
+        reply: list[Segment],
+        *,
+        reply_to_message_id: int | None = None,
+        mentions: Sequence[str] = (),
+    ) -> GroupMessage:
+        """Record one bounded follow-up after the primary message is persisted."""
+        return await self._db.write(
+            _append_character_message, turn_id, target, reply, reply_to_message_id, tuple(mentions)
+        )
+
+    async def complete_turn(self, turn_id: str) -> None:
+        await self._db.write(_complete_turn, turn_id)
 
     async def fail_turn(self, turn_id: str) -> None:
         await self._db.write(_fail_turn, turn_id)
@@ -534,6 +560,7 @@ def _finish_turn(
     reply: list[Segment],
     reply_to_message_id: int | None,
     mentions: Sequence[str],
+    finalize: bool,
 ) -> tuple[GroupMessage, GroupMessage]:
     cursor = by_name(db)
     turn = cursor.execute(
@@ -569,9 +596,10 @@ def _finish_turn(
         character_cursor.lastrowid, turn["group_id"], turn_id, "character", target.character_id,
         target.name_snapshot, None, ja, zh, reply, now, None, tuple(mentions),
     )
-    cursor.execute(
-        "UPDATE group_turns SET ended_at = ?, status = 'done' WHERE id = ?", (now, turn_id)
-    )
+    if finalize:
+        cursor.execute(
+            "UPDATE group_turns SET ended_at = ?, status = 'done' WHERE id = ?", (now, turn_id)
+        )
     cursor.execute(
         "UPDATE group_conversations SET updated_at = ? WHERE id = ?", (now, turn["group_id"])
     )
@@ -581,6 +609,57 @@ def _finish_turn(
 def _fail_turn(db: sqlite3.Connection, turn_id: str) -> None:
     db.execute(
         "UPDATE group_turns SET ended_at = ?, status = 'failed' "
+        "WHERE id = ? AND status = 'running'", (_now(), turn_id)
+    )
+
+
+def _append_character_message(
+    db: sqlite3.Connection,
+    turn_id: str,
+    target: GroupMember,
+    reply: list[Segment],
+    reply_to_message_id: int | None,
+    mentions: Sequence[str],
+) -> GroupMessage:
+    cursor = by_name(db)
+    turn = cursor.execute(
+        "SELECT id, group_id, status FROM group_turns WHERE id = ?", (turn_id,)
+    ).fetchone()
+    if turn is None or turn["status"] != "running":
+        raise GroupTurnConflict("群组回合还在生成主回复或已经结束")
+    now = _now()
+    ja = "".join(segment.ja for segment in reply)
+    zh = "".join(segment.zh for segment in reply)
+    message_cursor = cursor.execute(
+        "INSERT INTO group_messages(group_id, turn_id, author_kind, author_character_id, "
+        "author_name_snapshot, ja, zh, segments, created_at, reply_to_message_id, mentions) "
+        "VALUES (?, ?, 'character', ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            turn["group_id"], turn_id, target.character_id, target.name_snapshot, ja, zh,
+            json.dumps([{"ja": segment.ja, "zh": segment.zh} for segment in reply], ensure_ascii=False),
+            now, reply_to_message_id, json.dumps(list(mentions)),
+        ),
+    )
+    assert message_cursor.lastrowid is not None
+    cursor.execute(
+        "UPDATE group_conversations SET updated_at = ? WHERE id = ?",
+        (now, turn["group_id"]),
+    )
+    cursor.execute(
+        "UPDATE group_turns SET ended_at = ?, status = 'done' "
+        "WHERE id = ? AND status = 'running'",
+        (now, turn_id),
+    )
+    return GroupMessage(
+        message_cursor.lastrowid, turn["group_id"], turn_id, "character",
+        target.character_id, target.name_snapshot, None, ja, zh, reply, now,
+        reply_to_message_id, tuple(mentions),
+    )
+
+
+def _complete_turn(db: sqlite3.Connection, turn_id: str) -> None:
+    db.execute(
+        "UPDATE group_turns SET ended_at = ?, status = 'done' "
         "WHERE id = ? AND status = 'running'", (_now(), turn_id)
     )
 

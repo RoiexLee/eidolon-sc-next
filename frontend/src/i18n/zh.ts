@@ -192,6 +192,7 @@ export const zh = {
     character: "角色",
     speaking: (name: string) => `${name}正在回复`,
     failed: "这次回复没能完成，请重试。",
+    partial: "主回复已完成，另一位角色暂时没有回复。",
     memberCount: (count: string) => `${count} 位成员`,
   },
   conversation: {

@@ -260,6 +260,21 @@ describe("sendGroupTurn", () => {
       client_idempotency_key: "k2",
     });
   });
+
+  it("keeps the primary message compatible while exposing an appended message", async () => {
+    const fetch = vi.fn(async () => new Response(
+      'data: {"type":"partial","message":{},"error":"追加失败"}\n\n' +
+      'data: {"type":"done","turn_id":"t1","message":{},"messages":[{},{}],"partial":true}\n\n',
+      { headers: { "content-type": "text/event-stream" } },
+    ));
+    vi.stubGlobal("fetch", fetch);
+    const events = [];
+    for await (const event of sendGroupTurn("g1", { text: "hi" }, "u1")) events.push(event);
+    expect(events).toEqual([
+      { type: "partial", message: {}, error: "追加失败" },
+      { type: "done", turn_id: "t1", message: {}, messages: [{}, {}], partial: true },
+    ]);
+  });
 });
 
 describe("checkOwnSpeechKey", () => {
