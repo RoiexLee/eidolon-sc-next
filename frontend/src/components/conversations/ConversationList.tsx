@@ -9,13 +9,14 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { copy } from "@/i18n";
-import type { Character } from "@/lib/api";
+import { listGroups, type Character, type GroupConversation } from "@/lib/api";
 import { showTime } from "@/lib/callTime";
 import { arrange, dayOf, previewOf, type ListRow, type Preview } from "@/lib/conversationList";
+import { groupAvatarMembers, groupTitle } from "@/lib/groupChat";
 import { pin, setShown, unpin } from "@/lib/listPreferences";
 import { cn } from "@/lib/utils";
 import { herVars } from "@/theme/herVars";
-import { HideIcon, PinIcon, SearchIcon, ShowIcon, UnpinIcon } from "@/theme/icons";
+import { GroupIcon, HideIcon, PinIcon, SearchIcon, ShowIcon, UnpinIcon } from "@/theme/icons";
 
 import { Announcements } from "./Announcements";
 import { PreviewText } from "./PreviewText";
@@ -23,6 +24,7 @@ import { ServiceStatusButton } from "./ServiceStatusButton";
 import { useDirectory, type CallInList } from "./ConversationDirectory";
 import { ListFilter } from "./ListFilter";
 import { useCallTime } from "./useCallTime";
+import { GroupCreateDialog } from "./GroupCreateDialog";
 
 const t = copy.conversationList;
 
@@ -33,8 +35,11 @@ const t = copy.conversationList;
  * 但搜索时照样能搜到，当前打开的和正在通话的始终留下。一整列不按组合分段，换位置时直接跳过去、不做动画。
  * 列表栏是实底，不在她的子树里。宽屏时在左栏，窄屏时占满一页。
  */
-export function ConversationList({ selectedId }: { selectedId: string | null }) {
+export function ConversationList({ selectedId, selectedGroupId }: { selectedId: string | null; selectedGroupId: string | null }) {
   const { account, characters, latest, preferences, tidy, failure, reload, call, go, onScreen } = useDirectory();
+  const [groups, setGroups] = useState<GroupConversation[] | null>(null);
+  const [groupFailure, setGroupFailure] = useState<string | null>(null);
+  const [creatingGroup, setCreatingGroup] = useState(false);
   const now = useMinute();
   const [query, setQuery] = useState("");
   const [isFilterOpen, setFilterOpen] = useState(false);
@@ -43,6 +48,17 @@ export function ConversationList({ selectedId }: { selectedId: string | null }) 
   const hiddenCount = shown?.hiddenCount ?? 0;
   // 搜索时隐藏的人照样出现，「已隐藏 n 位」和全部隐藏的空状态只在没有搜索时出现。
   const showsHidden = query.trim() === "" && hiddenCount > 0;
+
+  useEffect(() => {
+    if (!account) return;
+    let active = true;
+    void listGroups().then((next) => active && setGroups(next)).catch((reason) => {
+      if (active) setGroupFailure(reason instanceof Error ? reason.message : t.groupLoadFailed);
+    });
+    return () => {
+      active = false;
+    };
+  }, [account]);
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
@@ -134,8 +150,98 @@ export function ConversationList({ selectedId }: { selectedId: string | null }) 
             )}
           </>
         )}
+        {!failure && shown && (
+          <GroupSection
+            groups={groups}
+            selectedGroupId={selectedGroupId}
+            onCreate={() => setCreatingGroup(true)}
+            onSelect={(id) => go(`/conversation/group/${id}`)}
+            failure={groupFailure}
+          />
+        )}
       </div>
+      {characters && (
+        <GroupCreateDialog
+          open={creatingGroup}
+          characters={characters}
+          onOpenChange={setCreatingGroup}
+          onCreated={(group) => {
+            setGroups((current) => [group, ...(current ?? []).filter((item) => item.id !== group.id)]);
+            go(`/conversation/group/${group.id}`);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function GroupSection({
+  groups,
+  selectedGroupId,
+  onCreate,
+  onSelect,
+  failure,
+}: {
+  groups: GroupConversation[] | null;
+  selectedGroupId: string | null;
+  onCreate: () => void;
+  onSelect: (id: string) => void;
+  failure: string | null;
+}) {
+  return (
+    <section className="border-t" aria-label={t.groupsTitle}>
+      <div className="flex items-center gap-2 px-4 py-2">
+        <h2 className="flex-1 text-meta font-medium text-muted-foreground">{t.groupsTitle}</h2>
+        <Button variant="ghost" size="sm" onClick={onCreate}>
+          <GroupIcon data-icon="inline-start" />
+          {t.createGroup}
+        </Button>
+      </div>
+      {failure ? (
+        <p className="px-4 pb-3 text-meta text-muted-foreground">{failure}</p>
+      ) : groups === null ? (
+        <p className="px-4 pb-3 text-meta text-muted-foreground">{t.groupLoading}</p>
+      ) : groups.length === 0 ? (
+        <p className="px-4 pb-3 text-meta text-muted-foreground">{t.groupCreateDescription}</p>
+      ) : (
+        <ul>
+          {groups.map((group) => (
+            <li key={group.id}>
+              <button
+                type="button"
+                aria-current={selectedGroupId === group.id ? "page" : undefined}
+                onClick={() => onSelect(group.id)}
+                className={cn(
+                  "flex w-full items-center gap-3 px-4 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                  selectedGroupId === group.id ? "bg-muted" : "hover:bg-muted/60",
+                )}
+              >
+                <GroupAvatar group={group} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-row-name">{groupTitle(group)}</span>
+                  <span className="block truncate text-preview text-muted-foreground">
+                    {t.groupMembers(String(group.current_members.length))}
+                  </span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function GroupAvatar({ group }: { group: GroupConversation }) {
+  const members = groupAvatarMembers(group);
+  return (
+    <span className="grid size-list-avatar shrink-0 grid-cols-2 grid-rows-2 overflow-hidden rounded-full bg-muted text-meta text-muted-foreground">
+      {members.map((member, index) => (
+        <span key={`${member.character_id}-${index}`} className="flex items-center justify-center">
+          {Array.from(member.name)[0]}
+        </span>
+      ))}
+    </span>
   );
 }
 

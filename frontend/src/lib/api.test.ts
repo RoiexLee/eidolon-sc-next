@@ -13,6 +13,7 @@ import {
   logoutEverywhere,
   redirectFor,
   sendTurn,
+  sendGroupTurn,
   type TurnEvent,
 } from "@/lib/api";
 import { keepOwnKey, localOwnKeys } from "@/lib/localOwnKeys";
@@ -210,6 +211,33 @@ describe("sendTurn", () => {
       vi.fn(async () => Response.json({ detail: "本小时的对话次数已用完" }, { status: 429 })),
     );
     await expect(events("c1", "hi")).rejects.toThrow("本小时的对话次数已用完，请稍后再试。");
+  });
+});
+
+describe("sendGroupTurn", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the target, quote, idempotency key and browser-owned LLM keys", async () => {
+    const fetch = vi.fn(async (_path: string, _init: RequestInit) =>
+      new Response('data: {"type":"done","turn_id":"t1","message":{}}\n\n', {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const events = [];
+    for await (const event of sendGroupTurn(
+      "g1",
+      { text: "你好", mention_character_ids: ["a"], reply_to_message_id: 3, client_idempotency_key: "k1" },
+      "u1",
+    )) events.push(event);
+    expect(events).toEqual([{ type: "done", turn_id: "t1", message: {} }]);
+    expect(fetch).toHaveBeenCalledWith("/api/groups/g1/turns", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(fetch.mock.calls[0][1].body as string)).toMatchObject({
+      text: "你好",
+      mention_character_ids: ["a"],
+      reply_to_message_id: 3,
+      client_idempotency_key: "k1",
+    });
   });
 });
 

@@ -101,6 +101,56 @@ export type Conversation = {
   created_at: string;
 };
 
+/** A member of a group conversation. Removed members remain in the history so old messages keep their author. */
+export type GroupMember = {
+  character_id: string;
+  position: number;
+  added_at: string;
+  removed_at: string | null;
+  name_snapshot: string;
+  current: boolean;
+  name: string;
+};
+
+export type GroupMessage = {
+  id: number;
+  group_id: string;
+  turn_id: string | null;
+  author_kind: "user" | "character";
+  author_character_id: string | null;
+  author_name_snapshot: string | null;
+  text: string | null;
+  ja: string | null;
+  zh: string | null;
+  segments: Segment[];
+  created_at: string;
+  reply_to_message_id: number | null;
+  mentions: string[];
+};
+
+export type GroupMessageSummary = Pick<
+  GroupMessage,
+  "id" | "author_kind" | "author_character_id" | "author_name_snapshot" | "text" | "created_at"
+>;
+
+export type GroupConversation = {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  members: GroupMember[];
+  current_members: GroupMember[];
+  history_members: GroupMember[];
+  last_message: GroupMessageSummary | null;
+};
+
+export type GroupTurnEvent =
+  | { type: "user"; text: string }
+  | { type: "speaker"; author_character_id: string; author_name_snapshot: string }
+  | { type: "delta"; segment: number; lang: "ja" | "zh"; text: string }
+  | { type: "done"; turn_id: string; message: GroupMessage }
+  | { type: "error"; message: string };
+
 /** The last thing in a conversation as a list shows it, a message (without delivery cues),
  * marked `photo` when it is her reply with a photo she sent (not one being generated or not sent
  * after all), or her reach-out, shown as her reply is, marked `reach_out`; or a conversation event
@@ -722,6 +772,69 @@ export async function createConversation(characterId: string): Promise<Conversat
       body: JSON.stringify({ character_id: characterId }),
     }),
   );
+}
+
+export async function listGroups(): Promise<GroupConversation[]> {
+  return json(await api("/api/groups"));
+}
+
+export async function getGroup(groupId: string): Promise<GroupConversation> {
+  return json(await api(`/api/groups/${encodeURIComponent(groupId)}`));
+}
+
+export async function listGroupMessages(groupId: string): Promise<GroupMessage[]> {
+  return json(await api(`/api/groups/${encodeURIComponent(groupId)}/messages`));
+}
+
+export async function createGroup(characterIds: readonly string[], title?: string | null): Promise<GroupConversation> {
+  return json(
+    await api("/api/groups", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ character_ids: characterIds, ...(title ? { title } : {}) }),
+    }),
+  );
+}
+
+export type GroupTurnInput = {
+  text: string;
+  mention_character_ids?: readonly string[];
+  reply_to_message_id?: number | null;
+  client_idempotency_key?: string;
+};
+
+export async function* sendGroupTurn(
+  groupId: string,
+  input: GroupTurnInput,
+  userId: string,
+): AsyncGenerator<GroupTurnEvent> {
+  const res = await api(`/api/groups/${encodeURIComponent(groupId)}/turns`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...input, own_keys: turnOwnKeys(userId) }),
+  });
+  if (!res.ok || !res.body) {
+    await json(res);
+    return;
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    let end;
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const data = frame
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => line.slice(6))
+        .join("\n");
+      if (data) yield JSON.parse(data) as GroupTurnEvent;
+    }
+  }
 }
 
 /** The conversation's record: its messages and conversation events, in order. */

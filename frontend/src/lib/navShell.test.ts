@@ -16,6 +16,7 @@ describe("在不在导航外壳里", () => {
     "/conversations",
     "/conversation/mano",
     "/conversation/mano?x=1",
+    "/conversation/group/g1",
     "/settings",
     "/settings?tab=own-keys",
     "/settings/own-keys",
@@ -68,6 +69,7 @@ describe("外壳顶上的通话条", () => {
     expect(showsShellCallBar("/settings?tab=call", "mano")).toBe(true);
     expect(showsShellCallBar("/conversations", "mano")).toBe(true);
     expect(showsShellCallBar("/conversation/hiori", "mano")).toBe(true);
+    expect(showsShellCallBar("/conversation/group/g1", "mano")).toBe(true);
   });
 
   it("她自己的对话页上不出现：那里有页首下面那条", () => {
@@ -87,6 +89,7 @@ describe("去某个网址时通话怎么样", () => {
 
   it("通话中在外壳里换页，通话留着", () => {
     expect(departure("/conversations", "mano")).toBe("keep");
+    expect(departure("/conversation/group/g1", "mano")).toBe("keep");
     expect(departure("/settings", "mano")).toBe("keep");
     expect(departure("/settings?tab=own-keys", "mano")).toBe("keep");
     expect(departure("/settings/memories", "mano")).toBe("keep");

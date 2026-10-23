@@ -27,6 +27,11 @@ function conversationOf(path: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+/** Group conversation pages are in the navigation shell but never own a character call layer. */
+function isGroupConversation(path: string): boolean {
+  return /^\/conversation\/group\/[^/]+\/?$/.test(path);
+}
+
 /** The play page: its first level and each of its subpages. */
 function isPlay(path: string): boolean {
   return path === PLAY_ROOT || playSubpage(path) !== null;
@@ -41,6 +46,7 @@ export function isInShell(href: string): boolean {
   return (
     path === "/conversations" ||
     conversationOf(path) !== null ||
+    isGroupConversation(path) ||
     isPlay(path) ||
     path === "/settings" ||
     path.startsWith("/settings/")
