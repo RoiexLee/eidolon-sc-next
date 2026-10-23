@@ -126,6 +126,9 @@ describe("导入、导出被拒时的提示", () => {
     expect(packageFailure(new ApiError("x", 422, { code: "too_new" })).message).toBe(
       "这个数据包来自更新的版本，请部署者升级后再导入",
     );
+    expect(packageFailure(new ApiError("x", 409, { code: "groups_unsupported" })).message).toBe(
+      "群组数据还不能随数据包导出，请先单独保存群组消息",
+    );
   });
 
   it("反向代理挡下的太大没有错误码，也提示不带照片重新导出", () => {

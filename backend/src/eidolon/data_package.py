@@ -127,6 +127,10 @@ class Busy(Exception):
     """The user is already importing or exporting a package: one at a time."""
 
 
+class GroupsUnsupported(Exception):
+    """The user has group conversations, which this package format cannot carry yet."""
+
+
 class ImportsUsedUp(Exception):
     """The user has made today's imports (`IMPORTS_PER_DAY`); they can again at `retry_at`,
     as the next day begins."""
@@ -611,6 +615,15 @@ class DataPackages:
         if user_id in self._working:
             raise Busy()
 
+    async def check_export_supported(
+        self, user_id: str, categories: Iterable[Category]
+    ) -> None:
+        """Refuse a conversation export that would silently omit group conversations."""
+        if "conversations" not in categories:
+            return
+        if await self._db.read(_has_groups, user_id):
+            raise GroupsUnsupported()
+
     @contextmanager
     def one_at_a_time(self, user_id: str) -> Iterator[None]:
         """Held while the user imports a package, from reading its first byte to the end, or
@@ -653,6 +666,8 @@ class DataPackages:
     ) -> tuple[ProducerProfile | None, list[WholeConversation], list[Memory]]:
         """What of the categories the user has, read through `db`, but the pictures of their
         photos: their profile, conversations and memories."""
+        if "conversations" in categories and _has_groups(db, user_id):
+            raise GroupsUnsupported()
         return (
             read_profile(db, user_id) if "profile" in categories else None,
             read_whole_conversations(db, user_id) if "conversations" in categories else [],
@@ -818,6 +833,13 @@ def _imports_made(db: sqlite3.Connection, user_id: str, since: str) -> int:
         (user_id, since),
     ).fetchone()
     return made
+
+
+def _has_groups(db: sqlite3.Connection, user_id: str) -> bool:
+    (has_groups,) = db.execute(
+        "SELECT EXISTS(SELECT 1 FROM group_conversations WHERE user_id = ?)", (user_id,)
+    ).fetchone()
+    return bool(has_groups)
 
 
 def _write_import(

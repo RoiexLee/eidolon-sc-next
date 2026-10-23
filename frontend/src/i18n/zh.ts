@@ -875,6 +875,7 @@ export const zh = {
         too_new: "这个数据包来自更新的版本，请部署者升级后再导入",
         too_large: "数据包太大了（最大 200 MB），可以不带照片重新导出",
         busy: "已经有一个数据包在导入或导出",
+        groups_unsupported: "群组数据还不能随数据包导出，请先单独保存群组消息",
       },
       usedUp: (time: string) => `今天的导入次数用完了，${time} 以后可以再导入`,
     },

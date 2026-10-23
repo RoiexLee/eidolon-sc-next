@@ -494,6 +494,22 @@ async def test_a_second_import_or_export_while_one_is_going_on_is_refused(
     assert (await import_package(client, PROFILE_PACKAGE, "profile")).status_code == 200
 
 
+async def test_export_with_groups_is_refused_instead_of_silently_omitting_them(
+    make_client: ClientFactory,
+):
+    client = make_client(FakeLLM())
+    created = await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})
+    assert created.status_code == 201, created.text
+
+    for path in (EXPORT_CHECK, "/api/account/data-package"):
+        response = await client.get(path, params={"include": "conversations"})
+        assert response.status_code == 409, path
+        assert response.json()["code"] == "groups_unsupported", path
+
+    assert (await client.get(EXPORT_CHECK, params={"include": "profile"})).status_code == 204
+    assert (await client.get("/api/account/data-package", params={"include": "profile"})).status_code == 200
+
+
 async def test_a_user_imports_three_packages_a_day_in_beijing(make_client: ClientFactory):
     clock = FakeClock(datetime(2026, 10, 19, 12, 0, tzinfo=UTC))  # 20:00 in Beijing
     client = make_client(FakeLLM(), clock=clock)
