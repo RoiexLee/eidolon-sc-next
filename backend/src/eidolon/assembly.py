@@ -40,6 +40,7 @@ from eidolon.call import Calls, Speech, SpeechServices
 from eidolon.characters import Character, load_characters
 from eidolon.gift_catalog import Gift, check_liked_gifts, gifts_path, load_gift_catalog
 from eidolon.gifts import Gifts
+from eidolon.group_store import GroupStore
 from eidolon.happenings import Happenings
 from eidolon.hot_words import hot_words
 from eidolon.housekeeping import keep_tidy
@@ -99,6 +100,7 @@ class Backend:
     database: Database
     """The database, as the modules moved onto the data access layer read and write it."""
     store: Store
+    group_store: GroupStore
     characters: dict[str, Character]
     gift_catalog: dict[str, Gift]
     """The gift catalog, by identifier."""
@@ -229,6 +231,7 @@ def build(
     closers: list[Closer] = [database.close]
 
     store = Store(database)
+    group_store = GroupStore(database)
     if identity_providers is None:
         identity_providers = open_identity_providers(settings.github, settings.google)
         closers.extend(p.aclose for p in identity_providers.values())
@@ -394,6 +397,7 @@ def build(
         settings=settings,
         database=database,
         store=store,
+        group_store=group_store,
         characters=characters,
         gift_catalog=gift_catalog,
         memories=memories,

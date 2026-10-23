@@ -33,6 +33,10 @@ USER_DATA = [
      "conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)"),
     ("calls", "conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)"),
     ("conversations", "user_id = ?"),
+    ("group_messages", "group_id IN (SELECT id FROM group_conversations WHERE user_id = ?)"),
+    ("group_turns", "group_id IN (SELECT id FROM group_conversations WHERE user_id = ?)"),
+    ("group_members", "group_id IN (SELECT id FROM group_conversations WHERE user_id = ?)"),
+    ("group_conversations", "user_id = ?"),
     ("producer_profiles", "user_id = ?"),
     ("affinities", "user_id = ?"),
     ("gift_balances", "user_id = ?"),
@@ -62,6 +66,13 @@ CONVERSATION_DATA = [
 ]
 """Every table holding a conversation's record, or kept under it as the calls in it are and
 when she is to reach out in it next, which is deleted with it, and which rows are its."""
+
+GROUP_DATA = [
+    ("group_messages", "group_id = ?"),
+    ("group_turns", "group_id = ?"),
+    ("group_members", "group_id = ?"),
+]
+"""Every table holding a group conversation's record, deleted with the group itself."""
 
 FROM_CONVERSATION = [
     ("memories", "conversation_id = NULL", "conversation_id = ?"),
@@ -169,6 +180,16 @@ def delete_conversation_data(db: sqlite3.Connection, conversation_id: str) -> No
         if table in present:
             db.execute(f"DELETE FROM {table} WHERE {where}", (conversation_id,))
     db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+
+
+def delete_group_data(db: sqlite3.Connection, group_id: str) -> None:
+    """Delete a group and its complete record, for good, through `db`."""
+    present = tables(db)
+    for table, where in GROUP_DATA:
+        if table in present:
+            db.execute(f"DELETE FROM {table} WHERE {where}", (group_id,))
+    if "group_conversations" in present:
+        db.execute("DELETE FROM group_conversations WHERE id = ?", (group_id,))
 
 
 def by_name(db: sqlite3.Connection) -> sqlite3.Cursor:
