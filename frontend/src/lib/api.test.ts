@@ -239,6 +239,27 @@ describe("sendGroupTurn", () => {
       client_idempotency_key: "k1",
     });
   });
+
+  it("posts empty mentions for the round-robin target", async () => {
+    const fetch = vi.fn(async (_path: string, _init: RequestInit) =>
+      new Response('data: {"type":"done","turn_id":"t1","message":{}}\n\n', {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    for await (const _event of sendGroupTurn(
+      "g1",
+      { text: "轮流", mention_character_ids: [], client_idempotency_key: "k2" },
+      "u1",
+    )) {
+      // consume the stream
+    }
+    expect(JSON.parse(fetch.mock.calls[0][1].body as string)).toMatchObject({
+      text: "轮流",
+      mention_character_ids: [],
+      client_idempotency_key: "k2",
+    });
+  });
 });
 
 describe("checkOwnSpeechKey", () => {

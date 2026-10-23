@@ -181,6 +181,7 @@ export const zh = {
     placeholder: "选择一位角色后说点什么",
     send: "发送",
     chooseTarget: "选择回复对象",
+    roundRobin: "按顺序轮流",
     target: "回复对象",
     noTarget: "先选择一位角色",
     quote: "引用这条消息",

@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import json
 
 from eidolon.llm import LLMError
+from eidolon.group_store import GroupMember, GroupMessage, round_robin_member
 from tests.conftest import ClientFactory
 from tests.fakes import FakeLLM
 
@@ -31,11 +33,67 @@ async def test_group_turn_targets_member_and_records_authors(make_client: Client
     assert llm.prompts[-1][1].role == "system"
 
 
+async def test_group_turn_without_target_round_robins_current_members(make_client: ClientFactory) -> None:
+    llm = FakeLLM(
+        ["<ja>一</ja><zh>一</zh>"],
+        ["<ja>二</ja><zh>二</zh>"],
+        ["<ja>三</ja><zh>三</zh>"],
+    )
+    client = make_client(llm)
+    group = (await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})).json()
+    path = f"/api/groups/{group['id']}/turns"
+    speakers = []
+    for index in range(3):
+        response = await client.post(path, json={"text": str(index), "client_idempotency_key": str(index)})
+        assert response.status_code == 200, response.text
+        speakers.append(next(event["author_character_id"] for event in events(response) if event["type"] == "speaker"))
+    assert speakers == ["mano", "kogane", "mano"]
+
+
+def test_group_round_robin_starts_at_first_current_member_after_removal() -> None:
+    current = (
+        GroupMember("kogane", 1, "", None, "恋鐘"),
+        GroupMember("new", 2, "", None, "New"),
+    )
+    previous = GroupMessage(
+        1, "g1", "t1", "character", "mano", "真乃", None, "一", "一", [], "", None, ()
+    )
+    assert round_robin_member(current, [previous]).character_id == "kogane"
+
+
+async def test_group_turn_quote_keeps_reference_author_before_round_robin(make_client: ClientFactory) -> None:
+    llm = FakeLLM(["<ja>一</ja><zh>一</zh>"], ["<ja>二</ja><zh>二</zh>"])
+    client = make_client(llm)
+    group = (await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})).json()
+    path = f"/api/groups/{group['id']}/turns"
+    first = await client.post(path, json={"text": "一"})
+    first_done = next(event for event in events(first) if event["type"] == "done")
+    second = await client.post(path, json={"text": "二", "reply_to_message_id": first_done["message"]["id"]})
+    assert next(event["author_character_id"] for event in events(second) if event["type"] == "speaker") == "mano"
+
+
+async def test_group_turn_round_robin_keeps_the_group_turn_lock(make_client: ClientFactory) -> None:
+    gate = asyncio.Event()
+    llm = FakeLLM(["<ja>一</ja><zh>一</zh>", gate], ["<ja>二</ja><zh>二</zh>"])
+    client = make_client(llm)
+    group = (await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})).json()
+    path = f"/api/groups/{group['id']}/turns"
+    first_task = asyncio.create_task(client.post(path, json={"text": "一"}))
+    for _ in range(100):
+        if llm.prompts:
+            break
+        await asyncio.sleep(0)
+    second = await client.post(path, json={"text": "二"})
+    assert second.status_code == 409
+    gate.set()
+    first = await first_task
+    assert first.status_code == 200
+
+
 async def test_group_turn_rejects_ambiguous_or_invalid_targets(make_client: ClientFactory) -> None:
     client = make_client(FakeLLM())
     group = (await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})).json()
     path = f"/api/groups/{group['id']}/turns"
-    assert (await client.post(path, json={"text": "x"})).status_code == 422
     assert (await client.post(path, json={"text": "x", "mention_character_ids": ["missing"]})).status_code == 422
     assert (await client.post(path, json={"text": "x", "mention_character_ids": ["mano", "kogane"]})).status_code == 422
 

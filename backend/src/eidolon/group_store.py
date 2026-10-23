@@ -182,6 +182,29 @@ class GroupMemberNotFound(LookupError):
     """An update named a character that is not in the expected membership state."""
 
 
+def round_robin_member(
+    current_members: Sequence[GroupMember], messages: Sequence[GroupMessage]
+) -> GroupMember:
+    """Choose the next current member after the latest character message."""
+    if not current_members:
+        raise GroupMembersInvalid("群组必须有 2 至 5 位成员")
+    by_id = {member.character_id: member for member in current_members}
+    previous_id = next(
+        (
+            message.author_character_id
+            for message in reversed(messages)
+            if message.author_kind == "character" and message.author_character_id is not None
+        ),
+        None,
+    )
+    if previous_id not in by_id:
+        return current_members[0]
+    previous_index = next(
+        index for index, member in enumerate(current_members) if member.character_id == previous_id
+    )
+    return current_members[(previous_index + 1) % len(current_members)]
+
+
 class GroupStore:
     """Asynchronous group persistence on the shared :class:`Database`."""
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { GroupConversation, GroupMessage } from "@/lib/api";
-import { currentGroupMembers, groupAvatarMembers, groupTitle, messageAuthor, messagePreview, messageText, replyTarget } from "@/lib/groupChat";
+import { currentGroupMembers, groupAvatarMembers, groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET } from "@/lib/groupChat";
 
 const group: GroupConversation = {
   id: "g1",
@@ -38,6 +38,10 @@ function message(partial: Partial<GroupMessage>): GroupMessage {
 }
 
 describe("groupChat", () => {
+  it("uses a non-empty select sentinel for the round-robin request", () => {
+    expect(ROUND_ROBIN_TARGET).not.toBe("");
+  });
+
   it("keeps only current members in position order and uses them for title and avatar", () => {
     expect(currentGroupMembers(group).map((member) => member.character_id)).toEqual(["a", "b"]);
     expect(groupTitle(group)).toBe("A、B");

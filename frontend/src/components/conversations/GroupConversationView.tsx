@@ -17,7 +17,7 @@ import {
   type GroupConversation,
   type GroupMessage,
 } from "@/lib/api";
-import { groupTitle, messageAuthor, messagePreview, messageText, replyTarget } from "@/lib/groupChat";
+import { groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET } from "@/lib/groupChat";
 import { BackIcon, MentionIcon, ReplyIcon, SendIcon } from "@/theme/icons";
 import { Ja } from "@/theme/Ja";
 
@@ -81,7 +81,7 @@ export function GroupConversationView({
         group.id,
         {
           text,
-          mention_character_ids: [targetId],
+          mention_character_ids: targetId === ROUND_ROBIN_TARGET ? [] : [targetId],
           reply_to_message_id: replyId,
           client_idempotency_key: crypto.randomUUID(),
         },
@@ -113,7 +113,7 @@ export function GroupConversationView({
               segments: [],
               created_at: new Date().toISOString(),
               reply_to_message_id: replyId,
-              mentions: [targetId],
+              mentions: targetId === ROUND_ROBIN_TARGET ? [] : [targetId],
             },
             event.message,
           ]);
@@ -215,6 +215,7 @@ export function GroupConversationView({
                 <SelectValue placeholder={t.chooseTarget} />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value={ROUND_ROBIN_TARGET}>{copy.groupConversation.roundRobin}</SelectItem>
                 {currentMembers.map((member) => <SelectItem key={member.character_id} value={member.character_id}>{member.name}</SelectItem>)}
               </SelectContent>
             </Select>

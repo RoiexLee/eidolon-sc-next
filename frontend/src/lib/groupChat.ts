@@ -1,5 +1,8 @@
 import type { GroupConversation, GroupMember, GroupMessage } from "@/lib/api";
 
+/** Select values cannot be empty; this value maps to an empty mentions request. */
+export const ROUND_ROBIN_TARGET = "__round_robin__";
+
 export function currentGroupMembers(group: GroupConversation): GroupMember[] {
   return group.members.filter((member) => member.current).sort((a, b) => a.position - b.position);
 }

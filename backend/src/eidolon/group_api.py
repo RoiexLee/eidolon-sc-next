@@ -27,6 +27,7 @@ from eidolon.group_store import (
     MAX_MEMBERS,
     MAX_TITLE_LENGTH,
     MIN_MEMBERS,
+    round_robin_member,
 )
 from eidolon.own_keys import BroughtKeys
 from eidolon.reply_format import SegmentDelta
@@ -172,19 +173,17 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
                 raise HTTPException(422, "引用消息不属于该群组")
             if reference.author_kind != "character" or reference.author_character_id is None:
                 raise HTTPException(422, "只能引用角色消息")
-        target_id = mentions[0] if mentions else (
+        requested_target_id = mentions[0] if mentions else (
             reference.author_character_id if reference is not None else None
         )
-        if target_id is None:
-            raise HTTPException(422, "请指定要回复的角色")
         if reference is not None and mentions and reference.author_character_id != mentions[0]:
             raise HTTPException(422, "引用消息和指定角色不一致")
-        if target_id not in characters:
+        if requested_target_id is not None and requested_target_id not in characters:
             raise HTTPException(422, "目标角色不是当前群组成员")
         client_key = body.client_idempotency_key.strip() if body.client_idempotency_key else None
         fingerprint = hashlib.sha256(
             json.dumps(
-                [text, target_id, body.reply_to_message_id, list(mentions)],
+                [text, requested_target_id, body.reply_to_message_id, list(mentions)],
                 ensure_ascii=False, separators=(",", ":"),
             ).encode()
         ).hexdigest()
@@ -207,12 +206,16 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
                 admission = None
             else:
                 group = await group_or_404(group_id, user_id)
-                current = {member.character_id: member for member in group.current_members}
-                if target_id not in current:
+                current_members = group.current_members
+                current = {member.character_id: member for member in current_members}
+                if requested_target_id is None:
+                    target = round_robin_member(current_members, await groups.messages(user_id, group_id))
+                elif requested_target_id not in current:
                     raise HTTPException(422, "目标角色不是当前群组成员")
+                else:
+                    target = current[requested_target_id]
                 if reference is not None and reference.author_character_id not in current:
                     raise HTTPException(422, "引用消息不属于当前群组成员")
-                target = current[target_id]
                 try:
                     turn = await groups.start_turn(user_id, group_id, client_key, fingerprint)
                 except GroupTurnBusy as error:
