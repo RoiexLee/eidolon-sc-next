@@ -24,7 +24,7 @@ import {
   type GroupMessage,
 } from "@/lib/api";
 import { groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET } from "@/lib/groupChat";
-import { BackIcon, MentionIcon, ReplyIcon, SendIcon } from "@/theme/icons";
+import { BackIcon, GroupIcon, MentionIcon, ReplyIcon, SendIcon } from "@/theme/icons";
 import { PhoneIcon } from "@/theme/icons";
 import { Ja } from "@/theme/Ja";
 import { cn } from "@/lib/utils";
@@ -223,20 +223,21 @@ export function GroupConversationView({
         </div>
         <Button
           variant="ghost"
-          size="sm"
-          onClick={() => setMemberDialogOpen(true)}
-          disabled={memberChangesLocked}
-        >
-          {t.members}
-        </Button>
-        <Button
-          variant="ghost"
           size="icon-lg"
           aria-label={inCall ? copy.call.expand : `呼叫${groupTitle(group)}`}
           onClick={() => (inCall ? live?.expand() : void live?.startCall())}
           disabled={!live || !groupSnapshot?.group || Boolean(groupSnapshot.failure && !groupSnapshot.group)}
         >
           <PhoneIcon className={cn("size-5 text-her-mark", inCall && "fill-current")} />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          aria-label={t.members}
+          onClick={() => setMemberDialogOpen(true)}
+          disabled={memberChangesLocked}
+        >
+          <GroupIcon aria-hidden />
         </Button>
       </header>
 
