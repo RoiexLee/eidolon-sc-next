@@ -91,6 +91,14 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
           />
         </label>
         <ListFilter isOpen={isFilterOpen} onOpenChange={setFilterOpen} hiddenCount={hiddenCount} />
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          aria-label={t.createGroup}
+          onClick={() => setCreatingGroup(true)}
+        >
+          <GroupIcon aria-hidden />
+        </Button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -167,11 +175,6 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
             )}
           </>
         )}
-        {!failure && arranged && (
-          <GroupSection
-            onCreate={() => setCreatingGroup(true)}
-          />
-        )}
         {groupFailure && <p className="px-4 pb-3 text-meta text-muted-foreground">{groupFailure}</p>}
       </div>
       {characters && (
@@ -186,24 +189,6 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
         />
       )}
     </div>
-  );
-}
-
-function GroupSection({
-  onCreate,
-}: {
-  onCreate: () => void;
-}) {
-  return (
-    <section className="border-t" aria-label={t.groupsTitle}>
-      <div className="flex items-center gap-2 px-4 py-2">
-        <h2 className="flex-1 text-meta font-medium text-muted-foreground">{t.groupsTitle}</h2>
-        <Button variant="ghost" size="sm" onClick={onCreate}>
-          <GroupIcon data-icon="inline-start" />
-          {t.createGroup}
-        </Button>
-      </div>
-    </section>
   );
 }
 
