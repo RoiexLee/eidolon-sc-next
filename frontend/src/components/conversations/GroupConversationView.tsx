@@ -246,7 +246,7 @@ export function GroupConversationView({
         {messages.length === 0 && pendingText === null ? (
           <Empty className="h-full"><EmptyHeader><EmptyTitle>{t.emptyTitle}</EmptyTitle></EmptyHeader></Empty>
         ) : (
-          <div className="mx-auto flex max-w-2xl flex-col gap-3">
+          <div className="flex w-full flex-col gap-3">
             {messages.map((message) => (
               <GroupMessageBubble
                 key={message.id}
