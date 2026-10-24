@@ -61,7 +61,7 @@ describe("读数据包开头的 manifest.json", () => {
   });
 
   it("格式比这里新时是 too_new", async () => {
-    const file = zip({ "manifest.json": [JSON.stringify({ ...MANIFEST, format: 3 }), 0], "data.json": ["{}", 6] });
+    const file = zip({ "manifest.json": [JSON.stringify({ ...MANIFEST, format: 4 }), 0], "data.json": ["{}", 6] });
 
     expect(await readManifest(file)).toEqual({ kind: "too_new" });
   });
@@ -88,7 +88,7 @@ describe("读数据包开头的 manifest.json", () => {
 });
 
 describe("导入结果的一句话", () => {
-  const nothing = { conversations: 0, photos: 0, memories: 0, profile: false, skipped: [] };
+  const nothing = { conversations: 0, photos: 0, memories: 0, groups: 0, profile: false, skipped: [] };
 
   it("说导入了什么", () => {
     expect(importSummary({ ...nothing, profile: true })).toBe("导入了制作人档案。");
@@ -96,6 +96,7 @@ describe("导入结果的一句话", () => {
       "导入了 3 段对话、2 张照片、12 条记忆和制作人档案。",
     );
     expect(importSummary({ ...nothing, memories: 1 })).toBe("导入了 1 条记忆。");
+    expect(importSummary({ ...nothing, groups: 2 })).toBe("导入了 2 个群组。");
   });
 
   it("什么也没新加时照实说", () => {
@@ -126,9 +127,7 @@ describe("导入、导出被拒时的提示", () => {
     expect(packageFailure(new ApiError("x", 422, { code: "too_new" })).message).toBe(
       "这个数据包来自更新的版本，请部署者升级后再导入",
     );
-    expect(packageFailure(new ApiError("x", 409, { code: "groups_unsupported" })).message).toBe(
-      "群组数据还不能随数据包导出，请先单独保存群组消息",
-    );
+    expect(packageFailure(new ApiError("x", 409, { code: "unknown" })).message).toBe("x");
   });
 
   it("反向代理挡下的太大没有错误码，也提示不带照片重新导出", () => {

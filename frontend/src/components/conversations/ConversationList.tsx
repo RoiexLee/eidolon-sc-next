@@ -52,15 +52,21 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
   useEffect(() => {
     if (!account) return;
     let active = true;
-    void listGroups().then((next) => {
+    const reloadGroups = () => {
       if (!active) return;
-      setGroups(next);
-      setGroupFailure(null);
-    }).catch((reason) => {
-      if (active) setGroupFailure(reason instanceof Error ? reason.message : t.groupLoadFailed);
-    });
+      void listGroups().then((next) => {
+        if (!active) return;
+        setGroups(next);
+        setGroupFailure(null);
+      }).catch((reason) => {
+        if (active) setGroupFailure(reason instanceof Error ? reason.message : t.groupLoadFailed);
+      });
+    };
+    reloadGroups();
+    window.addEventListener("eidolon:groups-changed", reloadGroups);
     return () => {
       active = false;
+      window.removeEventListener("eidolon:groups-changed", reloadGroups);
     };
   }, [account, selectedGroupId]);
 

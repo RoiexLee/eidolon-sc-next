@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS group_conversations (
     user_id TEXT NOT NULL REFERENCES users(id),
     title TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    source_id TEXT,
+    source_created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS group_conversations_by_user
     ON group_conversations(user_id, updated_at DESC);
@@ -141,6 +143,19 @@ class GroupTurn:
     ended_at: str | None
     status: str
     request_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class GroupPackage:
+    """A complete, user-scoped group snapshot used by data packages."""
+
+    id: str
+    created_at: str
+    updated_at: str
+    title: str | None
+    members: tuple[GroupMember, ...]
+    messages: tuple[GroupMessage, ...]
+    turns: tuple[GroupTurn, ...]
 
 
 class GroupTurnBusy(RuntimeError):
@@ -324,9 +339,24 @@ class GroupStore:
     ) -> GroupTurn | None:
         return await self._db.read(_turn_for_key, user_id, group_id, client_idempotency_key)
 
+    def package_groups(self, db: sqlite3.Connection, user_id: str) -> list[GroupPackage]:
+        """Read package snapshots on a caller-owned database connection."""
+        return _package_groups(db, user_id)
+
+    def write_package(
+        self, db: sqlite3.Connection, user_id: str, groups: Sequence[GroupPackage], now: str
+    ) -> int:
+        """Write package snapshots in the caller's transaction and return new groups."""
+        return _write_package(db, user_id, groups, now)
+
 
 def _open(db: sqlite3.Connection) -> None:
     db.executescript(_SCHEMA)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(group_conversations)")}
+    if "source_id" not in columns:
+        db.execute("ALTER TABLE group_conversations ADD COLUMN source_id TEXT")
+    if "source_created_at" not in columns:
+        db.execute("ALTER TABLE group_conversations ADD COLUMN source_created_at TEXT")
     columns = {row[1] for row in db.execute("PRAGMA table_info(group_turns)")}
     if "request_fingerprint" not in columns:
         db.execute("ALTER TABLE group_turns ADD COLUMN request_fingerprint TEXT")
@@ -675,3 +705,106 @@ def _turn_for_key(
         (group_id, user_id, client_key),
     ).fetchone()
     return None if row is None else GroupTurn(*row)
+
+
+def _package_groups(db: sqlite3.Connection, user_id: str) -> list[GroupPackage]:
+    """Read groups and their ended turns/messages without exposing SQL to callers."""
+    cursor = by_name(db)
+    groups = cursor.execute(
+        "SELECT id, title, created_at, updated_at FROM group_conversations "
+        "WHERE user_id = ? ORDER BY created_at, id", (user_id,)
+    ).fetchall()
+    result: list[GroupPackage] = []
+    for group in groups:
+        members = tuple(
+            GroupMember(row["character_id"], row["position"], row["added_at"], row["removed_at"], row["name_snapshot"])
+            for row in cursor.execute(
+                "SELECT character_id, position, added_at, removed_at, name_snapshot "
+                "FROM group_members WHERE group_id = ? ORDER BY position, id", (group["id"],)
+            )
+        )
+        turns = tuple(
+            GroupTurn(*row)
+            for row in cursor.execute(
+                "SELECT id, group_id, client_idempotency_key, started_at, ended_at, status, request_fingerprint "
+                "FROM group_turns WHERE group_id = ? AND status <> 'running' AND ended_at IS NOT NULL "
+                "ORDER BY started_at, id", (group["id"],)
+            )
+        )
+        ended = {turn.id for turn in turns}
+        rows = cursor.execute(
+            "SELECT id, group_id, turn_id, author_kind, author_character_id, author_name_snapshot, "
+            "text, ja, zh, segments, created_at, reply_to_message_id, mentions "
+            "FROM group_messages WHERE group_id = ? ORDER BY id", (group["id"],)
+        ).fetchall()
+        messages = tuple(
+            _decode_message(row)
+            for row in rows
+            if row["turn_id"] is None or row["turn_id"] in ended
+        )
+        result.append(GroupPackage(
+            group["id"], group["created_at"], group["updated_at"], group["title"],
+            members, messages, turns,
+        ))
+    return result
+
+
+def _write_package(
+    db: sqlite3.Connection, user_id: str, groups: Sequence[GroupPackage], now: str
+) -> int:
+    """Insert package groups, remapping every database id and preserving source identity."""
+    added = 0
+    cursor = by_name(db)
+    for group in groups:
+        if cursor.execute(
+            "SELECT 1 FROM group_conversations WHERE user_id = ? AND source_id = ? "
+            "AND source_created_at = ? LIMIT 1",
+            (user_id, group.id, group.created_at),
+        ).fetchone() is not None:
+            continue
+        current = [member for member in group.members if member.removed_at is None]
+        _check_member_count(tuple(member.character_id for member in current))
+        new_group_id = uuid.uuid4().hex
+        cursor.execute(
+            "INSERT INTO group_conversations(id, user_id, title, created_at, updated_at, source_id, source_created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (new_group_id, user_id, group.title, group.created_at, group.updated_at, group.id, group.created_at),
+        )
+        cursor.executemany(
+            "INSERT INTO group_members(group_id, character_id, position, added_at, removed_at, name_snapshot) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ((new_group_id, member.character_id, member.position, member.added_at, member.removed_at, member.name_snapshot)
+             for member in group.members),
+        )
+        turn_ids: dict[str, str] = {}
+        for turn in group.turns:
+            new_turn_id = uuid.uuid4().hex
+            turn_ids[turn.id] = new_turn_id
+            status = "failed" if turn.status == "running" else turn.status
+            ended_at = turn.ended_at or now
+            cursor.execute(
+                "INSERT INTO group_turns(id, group_id, client_idempotency_key, started_at, ended_at, status, request_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (new_turn_id, new_group_id, turn.client_idempotency_key, turn.started_at, ended_at,
+                 status, turn.request_fingerprint),
+            )
+        message_ids: dict[int, int] = {}
+        for message in group.messages:
+            message_turn = None if message.turn_id is None else turn_ids.get(message.turn_id)
+            reply_to = None if message.reply_to_message_id is None else message_ids.get(message.reply_to_message_id)
+            segments = json.dumps(
+                [{"ja": segment.ja, "zh": segment.zh} for segment in message.segments],
+                ensure_ascii=False,
+            )
+            inserted = cursor.execute(
+                "INSERT INTO group_messages(group_id, turn_id, author_kind, author_character_id, author_name_snapshot, "
+                "text, ja, zh, segments, created_at, reply_to_message_id, mentions) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_group_id, message_turn, message.author_kind, message.author_character_id,
+                 message.author_name_snapshot, message.text, message.ja, message.zh, segments,
+                 message.created_at, reply_to, json.dumps(list(message.mentions), ensure_ascii=False)),
+            )
+            assert inserted.lastrowid is not None
+            message_ids[message.id] = inserted.lastrowid
+        added += 1
+    return added

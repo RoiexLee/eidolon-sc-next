@@ -39,7 +39,7 @@ PROFILE = {
     "birthday": {"month": 2, "day": 29},
 }
 EMPTY_PROFILE = {"form_of_address": None, "gender": None, "timezone": None, "birthday": None}
-NOTHING_ELSE = {"conversations": 0, "photos": 0, "memories": 0, "skipped": []}
+NOTHING_ELSE = {"conversations": 0, "photos": 0, "memories": 0, "groups": 0, "skipped": []}
 
 
 def other_deployment(make_client: ClientFactory, settings: Settings, tmp_path: Path,
@@ -115,7 +115,7 @@ async def test_the_producer_profile_moves_to_another_deployment(
     entries, manifest, data = unzipped(package)
     assert [e.filename for e in entries] == ["manifest.json", "data.json"]
     assert entries[0].compress_type == zipfile.ZIP_STORED
-    assert manifest["format"] == 2
+    assert manifest["format"] == 3
     assert manifest["categories"] == ["profile"]
     assert manifest["counts"] == {"profile": 1}
     assert data == {"profile": {
@@ -191,9 +191,9 @@ async def test_a_package_from_a_newer_version_is_refused_whatever_its_entries(
     make_client: ClientFactory,
 ):
     client = make_client(FakeLLM())
-    newer = json.dumps({**MANIFEST, "format": 3, "categories": ["albums"]})
+    newer = json.dumps({**MANIFEST, "format": 4, "categories": ["albums"]})
     packages = {
-        "entries as now": package_of({**MANIFEST, "format": 3, "categories": ["albums"]}, {}),
+        "entries as now": package_of({**MANIFEST, "format": 4, "categories": ["albums"]}, {}),
         "no data.json, entries of its own": _zip(
             {"manifest.json": newer, "albums.json": "{}", "albums/1.json": "{}"}
         ),
@@ -494,18 +494,19 @@ async def test_a_second_import_or_export_while_one_is_going_on_is_refused(
     assert (await import_package(client, PROFILE_PACKAGE, "profile")).status_code == 200
 
 
-async def test_export_with_groups_is_refused_instead_of_silently_omitting_them(
+async def test_export_with_groups_is_allowed_and_groups_can_be_selected(
     make_client: ClientFactory,
 ):
     client = make_client(FakeLLM())
     created = await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})
     assert created.status_code == 201, created.text
 
-    for path in (EXPORT_CHECK, "/api/account/data-package"):
-        response = await client.get(path, params={"include": "conversations"})
-        assert response.status_code == 409, path
-        assert response.json()["code"] == "groups_unsupported", path
-
+    check = await client.get(EXPORT_CHECK, params={"include": "conversations"})
+    assert check.status_code == 204
+    exported = await client.get("/api/account/data-package", params={"include": "conversations"})
+    assert exported.status_code == 200, exported.text
+    groups = await client.get("/api/account/data-package", params={"include": "groups"})
+    assert groups.status_code == 200, groups.text
     assert (await client.get(EXPORT_CHECK, params={"include": "profile"})).status_code == 204
     assert (await client.get("/api/account/data-package", params={"include": "profile"})).status_code == 200
 

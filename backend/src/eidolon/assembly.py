@@ -428,7 +428,9 @@ def build(
         backups=backups,
         photos=photos,
         service_status=service_status,
-        data_packages=DataPackages(database, store, memories, characters, gift_catalog, clock),
+        data_packages=DataPackages(
+            database, store, memories, characters, gift_catalog, group_store, clock
+        ),
         reach_outs=reach_outs,
         world=world,
         corpus=corpus,

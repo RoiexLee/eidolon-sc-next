@@ -2,9 +2,7 @@
 
 数据包（`GLOSSARY.md`「数据包」）是用户在设置的「数据包」里导出的一个 zip：他自己的数据，带到这个部署或别的部署导入，接着用。它不是备份，也没有加密，是用户自己保管的明文。这份说明给别的部署者和以后的版本看：每个键的意思和版本规则。为什么好感度和礼物不在里面，见 ADR-0025。
 
-现在的格式是**第 2 版**。第 2 版在对话里加了她的搭话（`reach_outs`），别的和第 1 版一样。
-
-群组对话目前不属于数据包格式。用户拥有群组时，包含 `conversations` 类别的导出会明确拒绝，避免把群组消息静默遗漏；只导出其他类别仍可用。群组数据包另行设计格式升级。
+现在的格式是**第 3 版**。第 2 版在对话里加了她的搭话（`reach_outs`），第 3 版增加了独立的 `groups` 类别。
 
 ## zip 里有什么
 
@@ -20,21 +18,44 @@
 
 ```json
 {
-  "format": 2,
+  "format": 3,
   "exported_at": "2026-10-19T08:00:00.000000+00:00",
-  "categories": ["conversations", "photos", "memories", "profile"],
-  "counts": { "conversations": 12, "photos": 3, "memories": 40, "profile": 1 }
+  "categories": ["conversations", "photos", "memories", "profile", "groups"],
+  "counts": { "conversations": 12, "photos": 3, "memories": 40, "profile": 1, "groups": 2 }
 }
 ```
 
 - `format`：整数，这个包的格式版本。
 - `exported_at`：导出的时间。
-- `categories`：这个包里有哪几类，按 `conversations`、`photos`、`memories`、`profile` 的顺序。导出时没勾的类别不在这里。
-- `counts`：每类的条数，键同 `categories`。`profile` 是 1，`conversations` 是对话的段数，`photos` 是发出来了的照片的张数（就是 `photos/` 里的文件数，没发出去的不算），`memories` 是记忆的条数。
+- `categories`：这个包里有哪几类，按 `conversations`、`photos`、`memories`、`profile`、`groups` 的顺序。导出时没勾的类别不在这里。
+- `counts`：每类的条数，键同 `categories`。`profile` 是 1，`conversations` 是对话的段数，`photos` 是发出来了的照片的张数（就是 `photos/` 里的文件数，没发出去的不算），`memories` 是记忆的条数，`groups` 是群组数。
 
 ## `data.json`
 
 `categories` 里的每一类在这里有一个键，没有的类别就没有这个键。照片没有自己的键，挂在对话里她的回复上（见下面的 `photo`）。
+
+### `groups`：群组对话
+
+群组记录保存标题、成员历史、消息和已结束的回合审计：
+
+```json
+{
+  "groups": [{
+    "id": "group-source-id",
+    "created_at": "2026-10-19T08:00:00.000000+00:00",
+    "updated_at": "2026-10-19T08:05:00.000000+00:00",
+    "title": "周末讨论",
+    "members": [
+      {"character_id": "mano", "position": 0, "added_at": "2026-10-19T08:00:00.000000+00:00", "removed_at": null, "name_snapshot": "櫻木真乃"},
+      {"character_id": "kogane", "position": 1, "added_at": "2026-10-19T08:00:00.000000+00:00", "removed_at": null, "name_snapshot": "月岡恋鐘"}
+    ],
+    "messages": [],
+    "turns": []
+  }]
+}
+```
+
+成员保留 `character_id`、位置、加入/移除时间和名字快照；当前成员必须有 2 至 5 位，历史成员可以重复。消息保留作者快照、正文、日中分段、回复引用和 `mentions`；引用只能指向同组更早的消息。回合保留幂等键、开始/结束时间、状态和 request fingerprint，只导出已结束回合。当前没有持久化的群组通话记录，因此包里没有通话字段。导入会重新生成数据库 ID，按来源 ID 和创建时间幂等；不在当前角色配置中的历史作者仍依靠快照显示。
 
 ### `profile`：制作人档案
 

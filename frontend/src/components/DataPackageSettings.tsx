@@ -128,6 +128,7 @@ function ImportSection() {
       setPicked({ kind: "none" });
       // 导入已经成功了：没刷新到档案、记忆条数、对话列表也不报失败，那几处打开时自己会再读。
       if (result.conversations > 0) refresh();
+      if (result.groups > 0) window.dispatchEvent(new Event("eidolon:groups-changed"));
       if (result.profile) getProfile().then((saved) => profileSaved(toDraft(saved)), () => {});
       if (result.memories > 0) listMemories().then((list) => memoryCountChanged(list.length), () => {});
     } catch (e) {

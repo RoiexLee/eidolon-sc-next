@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Literal, get_args
+from typing import Annotated, Literal, cast, get_args
 
 from PIL import Image
 from pydantic import (
@@ -41,6 +41,7 @@ from eidolon.affinity import Change, Tier, next_day
 from eidolon.characters import Character
 from eidolon.data_access import Database
 from eidolon.gift_catalog import Gift
+from eidolon.group_store import GroupMember, GroupMessage, GroupPackage, GroupStore, GroupTurn
 from eidolon.memory import (
     MAX_MEMORY_LENGTH,
     CarriedMemory,
@@ -74,14 +75,17 @@ from eidolon.store import (
     write_profile,
 )
 
-FORMAT = 2
+FORMAT = 3
 """The newest format this version reads, and the one it exports. Changing the format adds
-one to it, and keeps reading the older ones: 2 added her reach-outs (`reach_outs`)."""
+one to it, and keeps reading the older ones: 2 added her reach-outs (`reach_outs`), 3 groups."""
 
 REACH_OUTS_SINCE = 2
 """The format whose conversations first held her reach-outs: before it, none may."""
 
-Category = Literal["conversations", "photos", "memories", "profile"]
+GROUPS_SINCE = 3
+"""The format whose packages first held group conversations."""
+
+Category = Literal["conversations", "photos", "memories", "profile", "groups"]
 CATEGORIES: tuple[Category, ...] = get_args(Category)
 """What a package may hold, in the order a manifest lists them. Photos go with the
 conversations they were sent in, never without them."""
@@ -125,10 +129,6 @@ class TooNew(Exception):
 
 class Busy(Exception):
     """The user is already importing or exporting a package: one at a time."""
-
-
-class GroupsUnsupported(Exception):
-    """The user has group conversations, which this package format cannot carry yet."""
 
 
 class ImportsUsedUp(Exception):
@@ -447,6 +447,119 @@ class PackagedConversation(_Strict):
         )
 
 
+class PackagedGroupMember(_Strict):
+    character_id: Annotated[str, Field(min_length=1, max_length=100)]
+    position: StrictInt = Field(ge=0)
+    added_at: Time
+    removed_at: Time | None
+    name_snapshot: Annotated[str, Field(min_length=1, max_length=100)]
+
+    def kept(self) -> GroupMember:
+        return GroupMember(
+            self.character_id, self.position, self.added_at, self.removed_at, self.name_snapshot
+        )
+
+
+class PackagedGroupMessage(_Strict):
+    id: PackageId
+    turn_id: PackageId | None
+    author_kind: Literal["user", "character"]
+    author_character_id: Annotated[str, Field(min_length=1, max_length=100)] | None
+    author_name_snapshot: Annotated[str, Field(min_length=1, max_length=100)] | None
+    text: str | None
+    ja: str | None
+    zh: str | None
+    segments: list[PackagedSegment]
+    created_at: Time
+    reply_to_message_id: PackageId | None
+    mentions: list[Annotated[str, Field(min_length=1, max_length=100)]]
+
+    @model_validator(mode="after")
+    def _author_shape(self) -> "PackagedGroupMessage":
+        if self.author_kind == "user":
+            if self.author_character_id is not None or self.author_name_snapshot is not None:
+                raise ValueError("a user message has a character author")
+            if self.ja is not None or self.zh is not None or self.segments:
+                raise ValueError("a user message has a character reply")
+        elif self.author_character_id is None or self.author_name_snapshot is None:
+            raise ValueError("a character message has no author snapshot")
+        return self
+
+    def kept(
+        self, group_id: str, *, message_id: int, turn_id: str | None, reply_to_message_id: int | None
+    ) -> GroupMessage:
+        return GroupMessage(
+            message_id, group_id, turn_id,
+            cast(Literal["user", "character"], self.author_kind),
+            self.author_character_id, self.author_name_snapshot, self.text, self.ja, self.zh,
+            [segment.kept() for segment in self.segments], self.created_at,
+            reply_to_message_id,
+            tuple(self.mentions),
+        )
+
+
+class PackagedGroupTurn(_Strict):
+    id: PackageId
+    client_idempotency_key: Annotated[str, Field(max_length=200)] | None
+    started_at: Time
+    ended_at: Time | None
+    status: Literal["running", "done", "failed"]
+    request_fingerprint: Annotated[str, Field(max_length=200)] | None
+
+    def kept(self, group_id: str) -> GroupTurn:
+        return GroupTurn(
+            str(self.id), group_id, self.client_idempotency_key, self.started_at,
+            self.ended_at, self.status, self.request_fingerprint,
+        )
+
+
+class PackagedGroup(_Strict):
+    id: PackageId
+    created_at: Time
+    updated_at: Time
+    title: Annotated[str, Field(max_length=100)] | None
+    members: list[PackagedGroupMember]
+    messages: list[PackagedGroupMessage]
+    turns: list[PackagedGroupTurn]
+
+    def kept(self) -> GroupPackage:
+        turn_ids = {turn.id: str(turn.id) for turn in self.turns}
+        message_ids = {message.id: index for index, message in enumerate(self.messages, 1)}
+        return GroupPackage(
+            str(self.id), self.created_at, self.updated_at, self.title,
+            tuple(member.kept() for member in self.members),
+            tuple(message.kept(
+                str(self.id), message_id=message_ids[message.id],
+                turn_id=None if message.turn_id is None else turn_ids[message.turn_id],
+                reply_to_message_id=None if message.reply_to_message_id is None else message_ids[message.reply_to_message_id],
+            ) for message in self.messages),
+            tuple(turn.kept(str(self.id)) for turn in self.turns),
+        )
+
+    @classmethod
+    def of(cls, group: GroupPackage) -> "PackagedGroup":
+        return cls(
+            id=group.id, created_at=group.created_at, updated_at=group.updated_at,
+            title=group.title,
+            members=[PackagedGroupMember(**asdict(member)) for member in group.members],
+            messages=[PackagedGroupMessage(
+                id=message.id, turn_id=message.turn_id,
+                author_kind=cast(Literal["user", "character"], message.author_kind),
+                author_character_id=message.author_character_id,
+                author_name_snapshot=message.author_name_snapshot, text=message.text,
+                ja=message.ja, zh=message.zh,
+                segments=PackagedSegment.all_of(message.segments), created_at=message.created_at,
+                reply_to_message_id=message.reply_to_message_id, mentions=list(message.mentions),
+            ) for message in group.messages],
+            turns=[PackagedGroupTurn(
+                id=turn.id, client_idempotency_key=turn.client_idempotency_key,
+                started_at=turn.started_at, ended_at=turn.ended_at,
+                status=cast(Literal["running", "done", "failed"], turn.status),
+                request_fingerprint=turn.request_fingerprint,
+            ) for turn in group.turns],
+        )
+
+
 class PackagedMemory(_Strict):
     id: PackageId
     source_character_id: Annotated[str, Field(min_length=1, max_length=100)]
@@ -493,6 +606,7 @@ class PackageData(_Strict):
     profile: PackagedProfile | None = None
     conversations: list[PackagedConversation] | None = None
     memories: list[PackagedMemory] | None = None
+    groups: list[PackagedGroup] | None = None
 
     @model_validator(mode="after")
     def _memories_told_in_conversations(self) -> "PackageData":
@@ -527,6 +641,43 @@ class PackageData(_Strict):
                 raise ValueError("a memory superseded by no other memory of the package")
         return self
 
+    @model_validator(mode="after")
+    def _groups_valid(self) -> "PackageData":
+        group_ids = [group.id for group in self.groups or []]
+        if len(set(group_ids)) != len(group_ids):
+            raise ValueError("two groups under one id")
+        for group in self.groups or []:
+            current = [member for member in group.members if member.removed_at is None]
+            if not 2 <= len(current) <= 5:
+                raise ValueError("a group has an invalid current member count")
+            if len({member.character_id for member in current}) != len(current):
+                raise ValueError("a group has a duplicate current member")
+            positions = [member.position for member in group.members]
+            if len(set(positions)) != len(positions):
+                raise ValueError("two group members under one position")
+            if any(
+                member.removed_at is not None and member.removed_at < member.added_at
+                for member in group.members
+            ):
+                raise ValueError("a group member was removed before being added")
+            turn_ids = [turn.id for turn in group.turns]
+            if len(set(turn_ids)) != len(turn_ids):
+                raise ValueError("two group turns under one id")
+            message_ids = [message.id for message in group.messages]
+            if len(set(message_ids)) != len(message_ids):
+                raise ValueError("two group messages under one id")
+            turn_set = set(turn_ids)
+            message_set = set(message_ids)
+            for message_index, message in enumerate(group.messages):
+                if message.turn_id is not None and message.turn_id not in turn_set:
+                    raise ValueError("a group message has no turn")
+                if message.reply_to_message_id is not None:
+                    if message.reply_to_message_id not in message_set:
+                        raise ValueError("a group message replies to no message")
+                    if message.reply_to_message_id not in message_ids[:message_index]:
+                        raise ValueError("a group message replies to a later message")
+        return self
+
 
 class Manifest(_Strict):
     format: StrictInt
@@ -559,6 +710,7 @@ class Imported:
     photos: int = 0
     """Only those sent, with their pictures: one not sent says only that she did not send it."""
     memories: int = 0
+    groups: int = 0
     profile: bool = False
     skipped: list[Skipped] = field(default_factory=list)
 
@@ -592,6 +744,7 @@ class DataPackages:
         memories: Memories,
         characters: Mapping[str, Character],
         gift_catalog: Mapping[str, Gift],
+        group_store: GroupStore,
         clock: Callable[[], datetime],
     ) -> None:
         self._db = db
@@ -599,6 +752,7 @@ class DataPackages:
         self._memories = memories
         self._characters = characters
         self._gift_catalog = gift_catalog
+        self._group_store = group_store
         self._clock = clock
         self._working: set[str] = set()
         """Whose packages are being imported or exported; on the event loop only."""
@@ -614,15 +768,6 @@ class DataPackages:
         """Raise `Busy` while the user is importing or exporting a package (`one_at_a_time`)."""
         if user_id in self._working:
             raise Busy()
-
-    async def check_export_supported(
-        self, user_id: str, categories: Iterable[Category]
-    ) -> None:
-        """Refuse a conversation export that would silently omit group conversations."""
-        if "conversations" not in categories:
-            return
-        if await self._db.read(_has_groups, user_id):
-            raise GroupsUnsupported()
 
     @contextmanager
     def one_at_a_time(self, user_id: str) -> Iterator[None]:
@@ -641,7 +786,7 @@ class DataPackages:
         but the pictures of their photos read at once, then written on a thread, reading
         the pictures one at a time."""
         categories = chosen(include)
-        profile, conversations, memories = await self._db.read(
+        profile, conversations, memories, groups = await self._db.read(
             self._read_data, user_id, categories
         )
         loop = asyncio.get_running_loop()
@@ -658,20 +803,19 @@ class DataPackages:
                 raise
 
         await asyncio.to_thread(
-            self._export, categories, profile, conversations, memories, picture_of, to
+            self._export, categories, profile, conversations, memories, groups, picture_of, to
         )
 
     def _read_data(
         self, db: sqlite3.Connection, user_id: str, categories: list[Category]
-    ) -> tuple[ProducerProfile | None, list[WholeConversation], list[Memory]]:
+    ) -> tuple[ProducerProfile | None, list[WholeConversation], list[Memory], list[GroupPackage]]:
         """What of the categories the user has, read through `db`, but the pictures of their
         photos: their profile, conversations and memories."""
-        if "conversations" in categories and _has_groups(db, user_id):
-            raise GroupsUnsupported()
         return (
             read_profile(db, user_id) if "profile" in categories else None,
             read_whole_conversations(db, user_id) if "conversations" in categories else [],
             self._memories.read_kept(db, user_id) if "memories" in categories else [],
+            self._group_store.package_groups(db, user_id) if "groups" in categories else [],
         )
 
     def _export(
@@ -680,6 +824,7 @@ class DataPackages:
         profile: ProducerProfile | None,
         conversations: list[WholeConversation],
         memories: list[Memory],
+        groups: list[GroupPackage],
         picture_of: Callable[[str], bytes | None],
         to: Path,
     ) -> None:
@@ -702,6 +847,9 @@ class DataPackages:
                 for m in memories
             ]
             counts["memories"] = len(data.memories)
+        if "groups" in categories:
+            data.groups = [PackagedGroup.of(group) for group in groups]
+            counts["groups"] = len(data.groups)
         now = self._clock()
         manifest = Manifest(
             format=FORMAT, exported_at=_written(now), categories=categories, counts=counts
@@ -752,7 +900,9 @@ class DataPackages:
         embedded afterwards, in the background. Whether the user has imports left today is
         for the caller to check first (`check_imports_left`), while it holds `one_at_a_time`."""
         unpacked = await asyncio.to_thread(self._unpack, package, include)
-        imported = await self._db.write(_write_import, user_id, unpacked, self._clock())
+        imported = await self._db.write(
+            _write_import, user_id, unpacked, self._clock(), self._group_store
+        )
         if imported.memories:
             self._memories.embed_carried(user_id)
         return imported
@@ -774,6 +924,8 @@ class DataPackages:
             )
         if "memories" in categories and data.memories is not None:
             unpacked.memories = data.memories
+        if "groups" in categories and data.groups is not None:
+            unpacked.groups = [group.kept() for group in data.groups]
         return unpacked
 
     def _unpack_conversations(
@@ -821,6 +973,7 @@ class _Unpacked:
     conversations: list[_Carried] = field(default_factory=list)
     skipped: list[Skipped] = field(default_factory=list)
     memories: list[PackagedMemory] = field(default_factory=list)
+    groups: list[GroupPackage] = field(default_factory=list)
 
 
 def _create(db: sqlite3.Connection) -> None:
@@ -835,15 +988,9 @@ def _imports_made(db: sqlite3.Connection, user_id: str, since: str) -> int:
     return made
 
 
-def _has_groups(db: sqlite3.Connection, user_id: str) -> bool:
-    (has_groups,) = db.execute(
-        "SELECT EXISTS(SELECT 1 FROM group_conversations WHERE user_id = ?)", (user_id,)
-    ).fetchone()
-    return bool(has_groups)
-
-
 def _write_import(
-    db: sqlite3.Connection, user_id: str, unpacked: _Unpacked, now: datetime
+    db: sqlite3.Connection, user_id: str, unpacked: _Unpacked, now: datetime,
+    group_store: GroupStore,
 ) -> Imported:
     """Add what of a package is `unpacked` to the user's data through `db`, in the caller's
     transaction, as an import they made `now`; what it added."""
@@ -863,6 +1010,8 @@ def _write_import(
         imported.memories = add_carried(
             db, user_id, [m.carried(here) for m in unpacked.memories]
         )
+    if unpacked.groups:
+        imported.groups = group_store.write_package(db, user_id, unpacked.groups, _written(now))
     db.execute(
         "DELETE FROM data_package_imports WHERE user_id = ? AND at < ?",
         (user_id, _today_began(now)),
@@ -902,6 +1051,8 @@ def _read(zipped: zipfile.ZipFile) -> tuple[Manifest, PackageData, dict[str, byt
             c.reach_outs for c in data.conversations or []
         ):
             raise BrokenPackage("reach-outs in a format before them")
+        if manifest.format < GROUPS_SINCE and data.groups is not None:
+            raise BrokenPackage("groups in a format before them")
         listed = set(manifest.categories)
         held = {c for c in CATEGORIES if c != "photos" and getattr(data, c) is not None}
         photos = data.photos()

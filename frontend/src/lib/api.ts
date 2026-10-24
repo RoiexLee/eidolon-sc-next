@@ -694,6 +694,7 @@ export type DataPackageImported = {
   conversations: number;
   photos: number;
   memories: number;
+  groups: number;
   /** Whether the producer profile was overwritten. */
   profile: boolean;
   /** Her conversations not imported: she is not on this deployment. */

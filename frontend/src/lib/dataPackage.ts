@@ -8,12 +8,12 @@ import { ApiError, type DataPackageImported } from "@/lib/api";
 import { toFailure, type Failure } from "@/lib/failure";
 
 /** 数据包里可能有的几类，按清单里的顺序。照片挂在对话下面，不带对话就不带照片。 */
-export const CATEGORIES = ["conversations", "photos", "memories", "profile"] as const;
+export const CATEGORIES = ["conversations", "photos", "memories", "profile", "groups"] as const;
 
 export type Category = (typeof CATEGORIES)[number];
 
 /** 这一版能读的最新格式，和后端 `data_package.FORMAT` 一样。 */
-export const FORMAT = 2;
+export const FORMAT = 3;
 
 const MANIFEST = "manifest.json";
 
@@ -137,6 +137,7 @@ export function importSummary(result: DataPackageImported): string {
     result.conversations > 0 && t.count.conversations(result.conversations),
     result.photos > 0 && t.count.photos(result.photos),
     result.memories > 0 && t.count.memories(result.memories),
+    result.groups > 0 && t.count.groups(result.groups),
   ].filter((count): count is string => Boolean(count));
   let imported: string;
   if (counts.length === 0) imported = result.profile ? t.importedProfile : t.nothingNew;

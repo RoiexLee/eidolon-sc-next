@@ -7,8 +7,7 @@ to the same address. Only the signed-in user's own, never anyone else's, admins'
 a `code` beside the `detail`, for the page to tell them apart: `too_new` (422) for a package
 from a newer version, `broken` (422) for anything else wrong with it, `too_large` (413) for
 one past `data_package.MAX_PACKAGE_BYTES`, `busy` (409) while the user is already importing
-or exporting one, `groups_unsupported` (409) when a conversation export would omit groups,
-and `used_up` (429, with `retry_at`) once they have made today's imports.
+or exporting one, and `used_up` (429, with `retry_at`) once they have made today's imports.
 
 The settings page downloads a package by sending the browser to it, so that it is never held
 in the page's memory: a refusal there would be a page of JSON. It asks
@@ -34,7 +33,6 @@ from eidolon.data_package import (
     CATEGORIES,
     BrokenPackage,
     Busy,
-    GroupsUnsupported,
     Category,
     ImportsUsedUp,
     TooLarge,
@@ -48,7 +46,6 @@ _TOO_NEW = "这个数据包来自更新的版本，请部署者升级后再导�
 _BROKEN = "这不是一个能用的数据包"
 _TOO_LARGE = "数据包太大了（最大 200 MB），可以不带照片重新导出"
 _BUSY = "已经有一个数据包在导入或导出"
-_GROUPS_UNSUPPORTED = "群组数据还不能随数据包导出，请先单独保存群组消息"
 
 
 def _categories(include: str) -> list[Category]:
@@ -81,9 +78,8 @@ def add_data_package_routes(app: FastAPI, backend: Backend) -> None:
     async def check_data_package_export(user_id: UserId, include: str = "") -> None:
         """Whether the user could export a package with the categories `include` names now:
         204 if so, refused as the export would be if not."""
-        categories = _categories(include)
+        _categories(include)
         packages.check_not_busy(user_id)
-        await packages.check_export_supported(user_id, categories)
 
     @app.get("/api/account/data-package")
     async def export_data_package(user_id: UserId, include: str = "") -> FileResponse:
@@ -95,11 +91,10 @@ def add_data_package_routes(app: FastAPI, backend: Backend) -> None:
         path = _temporary_file()
         try:
             with packages.one_at_a_time(user_id):
-                await packages.check_export_supported(user_id, categories)
                 await packages.export(user_id, categories, path)
         except BaseException as e:
             path.unlink(missing_ok=True)
-            if not isinstance(e, (Busy, GroupsUnsupported)):
+            if not isinstance(e, Busy):
                 log.error("exporting a data package failed", exc_info=True)
             raise
         return FileResponse(
@@ -148,12 +143,6 @@ def add_data_package_routes(app: FastAPI, backend: Backend) -> None:
     @app.exception_handler(Busy)
     async def busy(_: Request, e: Busy) -> JSONResponse:
         return JSONResponse({"detail": _BUSY, "code": "busy"}, status_code=409)
-
-    @app.exception_handler(GroupsUnsupported)
-    async def groups_unsupported(_: Request, e: GroupsUnsupported) -> JSONResponse:
-        return JSONResponse(
-            {"detail": _GROUPS_UNSUPPORTED, "code": "groups_unsupported"}, status_code=409
-        )
 
     @app.exception_handler(ImportsUsedUp)
     async def used_up(_: Request, e: ImportsUsedUp) -> JSONResponse:
