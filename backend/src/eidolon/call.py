@@ -31,7 +31,7 @@ from contextlib import nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import httpx
 import ormsgpack
@@ -132,6 +132,8 @@ from eidolon.engine import (
     UserSaid,
     shown,
 )
+from eidolon.group_engine import GroupTurnEngine
+from eidolon.group_store import GroupConversation, GroupStore
 from eidolon.llm import TurnLLMs
 from eidolon.own_keys import (
     BroughtKeys,
@@ -181,7 +183,7 @@ class Call:
     audio, the time zone its device reports, and the user's own image generation its photos
     are generated on, if it brings it."""
 
-    conversation: Conversation
+    conversation: "Conversation | GroupCallTarget"
     character: Character
     llms: TurnLLMs
     muted: bool
@@ -190,6 +192,20 @@ class Call:
     own_llm: bool = False
     voiced_by: FishAudioModel = DEFAULT_FISH_AUDIO_MODEL
     own_image: ImageSettings | None = None
+
+    @property
+    def group(self) -> "GroupCallTarget | None":
+        return self.conversation if isinstance(self.conversation, GroupCallTarget) else None
+
+
+@dataclass(frozen=True)
+class GroupCallTarget:
+    """The immutable group target captured when a group call is answered."""
+
+    id: str
+    user_id: str
+    group: GroupConversation
+    voice_ids: tuple[tuple[str, str], ...] = ()
 
 
 _taking_turn: ContextVar["CallTurns | None"] = ContextVar("_taking_turn", default=None)
@@ -213,6 +229,10 @@ async def _within_disconnect_timeout(closing: Awaitable[None], what: str) -> Non
         await asyncio.wait_for(closing, DISCONNECT_TIMEOUT)
     except TimeoutError:
         log.warning("gave up closing %s after %s seconds", what, DISCONNECT_TIMEOUT)
+
+
+async def _no_group_call_record() -> None:
+    """Group calls do not write single-character activity records yet."""
 
 
 class CallNotFound(Exception):
@@ -965,6 +985,8 @@ class Calls:
         clock: Clock,
         store: Store,
         happenings: Happenings,
+        group_store: GroupStore | None = None,
+        group_engine: GroupTurnEngine | None = None,
     ) -> None:
         """Calls last as long, and take as many turns, as `limits` says as each starts.
         Calls of users banned or deleted meanwhile, as `store` has them, are hung up. Each
@@ -979,6 +1001,8 @@ class Calls:
         self._clock = clock
         self._store = store
         self._happenings = happenings
+        self._group_store = group_store
+        self._group_engine = group_engine
         self._webrtc = SmallWebRTCRequestHandler(
             ice_servers=[RTCIceServer(**server) for server in settings.ice_servers]
         )
@@ -1047,6 +1071,59 @@ class Calls:
         finally:
             self._placing.discard(placing)
 
+    async def start_group(
+        self,
+        user_id: str,
+        group: GroupConversation,
+        characters: dict[str, Character],
+        options: CallOptions,
+        offer: SessionDescription,
+        brought: BroughtKeys = BroughtKeys(),
+    ) -> dict:
+        """Answer a group call using a snapshot of its current members."""
+        if self._group_store is None or self._group_engine is None:
+            raise CallFailed()
+        members = group.current_members
+        if len(members) < 2:
+            raise CallFailed()
+        first = characters.get(members[0].character_id)
+        if first is None:
+            raise CallFailed()
+        self._refuse_unless_room(user_id)
+        placing = _Placing(user_id)
+        self._placing.add(placing)
+        try:
+            admission = await self._admissions.admitted(
+                cast(
+                    Awaitable[Admission[CallKeys]],
+                    self._admissions.group_call(user_id, brought),
+                ),
+                lambda let_in: CallOutcome(
+                    cast(Admission[CallKeys], let_in), self._limits(), self._clock,
+                    lambda _connected, _duration: _no_group_call_record(),
+                ).set_up_failed(),
+            )
+            outcome = CallOutcome(
+                cast(Admission[CallKeys], admission), self._limits(), self._clock,
+                lambda _connected, _duration: _no_group_call_record(),
+            )
+            try:
+                await self.hang_up(user_id, "left")
+            except BaseException:
+                await outcome.set_up_failed()
+                raise
+            target = GroupCallTarget(
+                group.id, user_id, group,
+                tuple((member.character_id, characters[member.character_id].voice_id)
+                      for member in members if member.character_id in characters),
+            )
+            return await self._start(
+                user_id, target, first, options, offer,
+                cast(Admission[CallKeys], admission), outcome, placing,
+            )
+        finally:
+            self._placing.discard(placing)
+
     async def _admit_and_start(
         self,
         user_id: str,
@@ -1082,11 +1159,11 @@ class Calls:
     async def _start(
         self,
         user_id: str,
-        conversation: Conversation,
+        conversation: Conversation | GroupCallTarget,
         character: Character,
         options: CallOptions,
         offer: SessionDescription,
-        admission: Admission[CallKeys],
+        admission: Any,
         outcome: CallOutcome,
         placing: "_Placing",
         own_image: ImageSettings | None = None,
@@ -1104,7 +1181,7 @@ class Calls:
 
             live = _LiveCall(
                 connection, call, self._engine, self._store, self._speech, keys, outcome,
-                keys.emotions,
+                keys.emotions, self._group_store, self._group_engine,
             )
             self._placing.discard(placing)  # under way as a live call from now on
             self._live.add(live)
@@ -1269,6 +1346,8 @@ class _LiveCall:
         keys: CallKeys,
         outcome: CallOutcome,
         emotions: EmotionJudging | None,
+        group_store: GroupStore | None = None,
+        group_engine: GroupTurnEngine | None = None,
     ) -> None:
         self._connection = connection
         self._call = call
@@ -1283,9 +1362,18 @@ class _LiveCall:
         hearing = speech.stt(keys.stt, own="stt" in keys.own)
         stt = hearing.stt
         self._stt_provider: SttProvider = keys.stt.provider
-        self._turns = CallTurns(
-            engine, store, call, outcome, hearing.follow_on_timeout, emotions
-        )
+        if call.group is None:
+            self._turns = CallTurns(
+                engine, store, call, outcome, hearing.follow_on_timeout, emotions
+            )
+        else:
+            from eidolon.group_call import GroupCallTurns
+
+            if group_store is None or group_engine is None:
+                raise RuntimeError("group call services are unavailable")
+            self._turns = GroupCallTurns(
+                group_store, group_engine, call, outcome, hearing.follow_on_timeout,
+            )
         tts = speech.tts(
             keys.tts, keys.tts_model, call.character.voice_id, sample_rate, own="tts" in keys.own
         )
@@ -1348,7 +1436,7 @@ class _LiveCall:
 
     @property
     def character_id(self) -> str:
-        return self._call.character.id
+        return self._call.group.id if self._call.group is not None else self._call.character.id
 
     @property
     def conversation_id(self) -> str:
@@ -1772,6 +1860,7 @@ class CallTurns(FrameProcessor):
         """Carry out each event of the reply, as `_reply_to` says. The turn is told how it
         turned out as a text turn is."""
         recorded = CallTurnRecorded()
+        assert isinstance(self._call.conversation, Conversation)
         async for event in self._engine.turn(
             self._call.conversation, text, self._call.llms, self._call.device_timezone, stop,
             self._outcome.in_call, self._call.voiced_by, self._call.own_image,

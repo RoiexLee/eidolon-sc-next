@@ -26,12 +26,14 @@ from pipecat.frames.frames import (
     Frame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
+    TTSUpdateSettingsFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
 )
 from pipecat.services.settings import STTSettings, TTSSettings
 from pipecat.services.stt_service import STTService
 from pipecat.services.tts_service import TTSService
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.utils.time import time_now_iso8601
 
 from eidolon.assembly import Backend, build
@@ -725,7 +727,15 @@ class FakeTTS(TTSService):
         self.api_key = api_key
         self.model = model
         self.voice_id = voice_id
+        self.voice_changes = [voice_id]
         self.voiced: list[str] = []
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TTSUpdateSettingsFrame) and frame.delta is not None:
+            voice = getattr(frame.delta, "voice", None)
+            if voice is not None:
+                self.voice_changes.append(voice)
 
     async def break_down(self, error: str = "fake speech synthesis is down") -> None:
         """Fail as a rejected API key would: for good, saying `error`."""

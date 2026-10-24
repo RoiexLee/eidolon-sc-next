@@ -63,6 +63,7 @@ from eidolon.announcements_api import add_announcement_routes
 from eidolon.calendar_api import add_calendar_routes
 from eidolon.gifts_api import add_gift_routes
 from eidolon.group_api import add_group_routes
+from eidolon.group_store import GroupConversation
 from eidolon.photos_api import add_photo_routes
 from eidolon.sessions import UserId, session_middleware
 from eidolon.sponsor_api import add_sponsor_routes
@@ -112,11 +113,18 @@ class TurnInput(BaseModel):
 
 
 class CallRequest(BaseModel):
-    conversation_id: str
+    conversation_id: str | None = None
+    group_id: str | None = None
     muted: bool = False
     quality: Quality = "standard"
     own_keys: OwnKeysInput | None = None
     """The user's own keys, which their browser keeps, for the call to run on."""
+
+    @model_validator(mode="after")
+    def _one_target(self) -> "CallRequest":
+        if (self.conversation_id is None) == (self.group_id is None):
+            raise ValueError("通话必须指定 conversation_id 或 group_id 之一")
+        return self
 
 
 class BirthdayInput(BaseModel):
@@ -381,6 +389,16 @@ def create_app(backend: Backend) -> FastAPI:
         await refuse_if_ended(conversation)
         return conversation
 
+    async def group_to_call(group_id: str, user_id: str) -> GroupConversation:
+        group = await backend.group_store.get_group(group_id, user_id)
+        if group is None:
+            raise HTTPException(404, "群组不存在")
+        if len(group.current_members) < 2:
+            raise HTTPException(409, "群组当前成员不足，无法通话")
+        if any(member.character_id not in characters for member in group.current_members):
+            raise HTTPException(409, "群组中有不可用角色")
+        return group
+
     @app.get("/api/health")
     async def health() -> JSONResponse:
         """Whether the backend can serve: 503 when it cannot read the database in time,
@@ -412,16 +430,24 @@ def create_app(backend: Backend) -> FastAPI:
 
     @app.get("/api/ice-servers")
     async def ice_servers(
-        user_id: UserId, own: str = "", conversation: str | None = None
+        user_id: UserId, own: str = "", conversation: str | None = None,
+        group_id: str | None = None, conversation_id: str | None = None,
     ) -> dict:
         """What the browser needs before calling, if the call is to bring the user's own
         keys for the services `own` names (as `llm,tts,stt`), but none of the keys; also
         tells it when calls are unavailable, or, for a call into `conversation`, when she
         is in a cooldown or has ended it."""
+        if conversation is not None and conversation_id is not None:
+            raise HTTPException(422, "通话只能指定一个目标")
+        target_conversation = conversation_id or conversation
+        if target_conversation is not None and group_id is not None:
+            raise HTTPException(422, "通话只能指定一个目标")
         character_id = None
-        if conversation:
-            into = await conversation_to_call(conversation, user_id)
+        if target_conversation:
+            into = await conversation_to_call(target_conversation, user_id)
             character_id = into.character_id
+        if group_id is not None:
+            await group_to_call(group_id, user_id)
         return await calls.ice_servers(user_id, named_services(own), character_id)
 
     @app.post("/api/offer")
@@ -437,6 +463,17 @@ def create_app(backend: Backend) -> FastAPI:
             )
         if body.call is None:
             raise HTTPException(422, "缺少要通话的对话")
+        if body.call.group_id is not None:
+            group = await group_to_call(body.call.group_id, user_id)
+            return await calls.start_group(
+                user_id,
+                group,
+                characters,
+                CallOptions(body.call.muted, body.call.quality, device_timezone),
+                description,
+                body.call.own_keys.brought() if body.call.own_keys else BroughtKeys(),
+            )
+        assert body.call.conversation_id is not None
         conversation = await conversation_to_call(body.call.conversation_id, user_id)
         return await calls.start(
             user_id,

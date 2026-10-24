@@ -19,6 +19,7 @@ The `Admission` it hands out settles it, once: given back unless its result coun
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar
 
@@ -130,6 +131,67 @@ class GroupAdmission:
             self.keys.release()
 
 
+class _GroupCallRecording:
+    """No-op recording until activity records gain a group scope."""
+
+    @contextmanager
+    def current(self):
+        yield
+
+    def turn(self, own_llm: bool) -> "_GroupCallRecording":
+        return _GroupCallRecording()
+
+    def spoke(self) -> None:
+        pass
+
+    def add(self, *args, **kwargs) -> None:
+        pass
+
+    def judged(self, *args, **kwargs) -> None:
+        pass
+
+    async def finish(self, *args, **kwargs) -> None:
+        pass
+
+
+class GroupCallAdmission:
+    """A group-call usage lease without a single-character activity row."""
+
+    def __init__(self, keys: CallKeys, use: Use) -> None:
+        self.keys = keys
+        self.recording = _GroupCallRecording()
+        self._use = use
+        self._settled = False
+
+    @property
+    def llms(self) -> TurnLLMs:
+        return self.keys.llms
+
+    @property
+    def own_llm(self) -> bool:
+        return self.keys.own_llm
+
+    @property
+    def exempt(self) -> bool:
+        return self.keys.exempt
+
+    def counts(self, result: Result) -> bool:
+        return not self.exempt and result in _COUNTED["call"]
+
+    async def settle(
+        self, result: Result, duration: float | None = None,
+        end_reason: CallEndReason | None = None,
+    ) -> None:
+        if self._settled:
+            return
+        self._settled = True
+        try:
+            if result not in _COUNTED["call"]:
+                await self._use.give_back()
+        finally:
+            self.keys.release()
+
+
 class Admissions:
     """Lets the users' turns and calls begin, on the limits and keys of the moment."""
 
@@ -186,6 +248,16 @@ class Admissions:
             keys.release()
             raise
         return GroupAdmission(keys, use)
+
+    async def group_call(self, user_id: str, brought: BroughtKeys) -> GroupCallAdmission:
+        """Let one group call use the call quota without a character activity row."""
+        keys = self._own_keys.for_call(brought)
+        try:
+            use = await self._usage.take(user_id, "call", exempt=keys.exempt)
+        except BaseException:
+            keys.release()
+            raise
+        return GroupCallAdmission(keys, use)
 
     async def admitted(
         self,

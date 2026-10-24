@@ -388,7 +388,7 @@ def build(
     closers.append(admissions.aclose)  # closed after the calls, which may leave some to settle
     calls = Calls(
         settings, engine, admissions, own_keys, lambda: config.usage_limits, speech, clock, store,
-        happenings,
+        happenings, group_store=group_store, group_engine=group_engine,
     )
     closers.append(calls.aclose)  # closed before memory, so no call is still taking turns
     engine.on_cooled(calls.cooled)

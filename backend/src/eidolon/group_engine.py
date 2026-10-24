@@ -128,13 +128,12 @@ class GroupTurnEngine:
             yield _GroupTurnPrimary(character)
             messages = [character]
             try:
-                latest_group = await self._groups.get_group(group.id, group.user_id)
-                if latest_group is None:
-                    raise RuntimeError("群组不存在")
                 latest_messages = await self._groups.messages(group.user_id, group.id)
-                extra_target = round_robin_member(latest_group.current_members, latest_messages)
+                # A call owns the member snapshot it was started with. History may grow
+                # during the turn, but a membership edit must not change its next speaker.
+                extra_target = round_robin_member(group.current_members, latest_messages)
                 append_prompt = self._prompt(
-                    latest_group,
+                    group,
                     extra_target,
                     latest_messages,
                     "请接着群组里的上一条消息，自然地回复一条简短消息。",
