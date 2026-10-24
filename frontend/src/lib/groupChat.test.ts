@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { GroupConversation, GroupMessage } from "@/lib/api";
-import { currentGroupMembers, groupAvatarMembers, groupMemberPatch, groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET, validGroupMemberCount } from "@/lib/groupChat";
+import { currentGroupMembers, groupAvatarMembers, groupMemberPatch, groupMentionAt, groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET, validGroupMemberCount } from "@/lib/groupChat";
 
 const group: GroupConversation = {
   id: "g1",
@@ -38,6 +38,12 @@ function message(partial: Partial<GroupMessage>): GroupMessage {
 }
 
 describe("groupChat", () => {
+  it("finds a mention after a whitespace boundary", () => {
+    expect(groupMentionAt("你是谁 @toru", 9)).toEqual({ start: 4, end: 9, query: "toru" });
+    expect(groupMentionAt("abc@toru", 8)).toBeNull();
+    expect(groupMentionAt("@", 1)).toEqual({ start: 0, end: 1, query: "" });
+  });
+
   it("uses a non-empty select sentinel for the round-robin request", () => {
     expect(ROUND_ROBIN_TARGET).not.toBe("");
   });

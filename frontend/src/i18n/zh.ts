@@ -178,7 +178,7 @@ export const zh = {
     loadFailed: "群组对话没能打开",
     notFound: "没有这个群组",
     emptyTitle: "在群组里说点什么吧",
-    placeholder: "选择一位角色后说点什么",
+    placeholder: "说点什么（输入 @ 选择角色）",
     send: "发送",
     chooseTarget: "选择回复对象",
     roundRobin: "按顺序轮流",

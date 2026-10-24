@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { MarkedAvatar } from "@/components/app/MarkedAvatar";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,6 @@ import { GroupMemberDialog } from "@/components/conversations/GroupMemberDialog"
 import { useDirectory, useWide } from "@/components/conversations/ConversationDirectory";
 import { useFocusBack } from "@/components/conversations/useFocusBack";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { copy } from "@/i18n";
@@ -23,8 +22,9 @@ import {
   type GroupConversation,
   type GroupMessage,
 } from "@/lib/api";
-import { groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET } from "@/lib/groupChat";
-import { BackIcon, GroupIcon, MentionIcon, ReplyIcon, SendIcon } from "@/theme/icons";
+import { matchesSearch } from "@/lib/characterSearch";
+import { groupMentionAt, groupTitle, messageAuthor, messagePreview, messageText, replyTarget } from "@/lib/groupChat";
+import { BackIcon, GroupIcon, ReplyIcon, SendIcon } from "@/theme/icons";
 import { PhoneIcon } from "@/theme/icons";
 import { Ja } from "@/theme/Ja";
 import { cn } from "@/lib/utils";
@@ -57,9 +57,13 @@ export function GroupConversationView({
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
   const [partialNotice, setPartialNotice] = useState<string | null>(null);
-  const [targetId, setTargetId] = useState<string | null>(null);
+  const [mentionTargetId, setMentionTargetId] = useState<string | null>(null);
+  const [mentionToken, setMentionToken] = useState<{ characterId: string; name: string; start: number; end: number } | null>(null);
+  const [mentionRange, setMentionRange] = useState<{ start: number; end: number; query: string } | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
   const [replyId, setReplyId] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [speaker, setSpeaker] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState({ ja: "", zh: "" });
@@ -83,7 +87,10 @@ export function GroupConversationView({
         if (!active) return;
         setGroup(nextGroup);
         setMessages(nextMessages);
-        setTargetId(nextGroup.current_members[0]?.character_id ?? null);
+        setMentionTargetId(null);
+        setMentionToken(null);
+        setMentionRange(null);
+        setMentionIndex(0);
       })
       .catch((reason) => active && setFailure(reason instanceof Error ? reason.message : t.loadFailed));
     return () => {
@@ -109,15 +116,59 @@ export function GroupConversationView({
   const currentMembers = group?.current_members ?? [];
   const characterById = useMemo(() => new Map(characters.map((character) => [character.id, character])), [characters]);
   const quoted = replyId === null ? null : messages.find((message) => message.id === replyId) ?? null;
+  const mentionCandidates = useMemo(() => {
+    if (!mentionRange) return [];
+    const query = mentionRange.query.toLocaleLowerCase();
+    return currentMembers.filter((member) => {
+      const character = characterById.get(member.character_id);
+      return character ? matchesSearch(character, query) : member.name.toLocaleLowerCase().includes(query);
+    });
+  }, [currentMembers, mentionRange]);
+
+  const updateDraft = (value: string, cursor: number) => {
+    setDraft(value);
+    if (mentionToken) {
+      const token = `@${mentionToken.name}`;
+      const start = value.indexOf(token, Math.max(0, mentionToken.start - 1));
+      const end = start + token.length;
+      if (start < 0 || (start > 0 && !/\s/.test(value[start - 1])) || (end < value.length && !/\s/.test(value[end]))) {
+        if (mentionTargetId === mentionToken.characterId) setMentionTargetId(null);
+        setMentionToken(null);
+      } else {
+        setMentionToken({ ...mentionToken, start, end });
+      }
+    }
+    setMentionRange(groupMentionAt(value, cursor));
+    setMentionIndex(0);
+  };
+
+  const chooseMention = (member: GroupConversation["current_members"][number]) => {
+    if (!mentionRange) return;
+    const replacement = `@${member.name} `;
+    const nextDraft = `${draft.slice(0, mentionRange.start)}${replacement}${draft.slice(mentionRange.end)}`;
+    const nextCursor = mentionRange.start + replacement.length;
+    setDraft(nextDraft);
+    setMentionTargetId(member.character_id);
+    setMentionToken({ characterId: member.character_id, name: member.name, start: mentionRange.start, end: mentionRange.start + replacement.trimEnd().length });
+    setMentionRange(null);
+    setMentionIndex(0);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
 
   const submit = async () => {
     const text = draft.trim();
-    if (!text || !group || !targetId || sending) return;
+    if (!text || !group || sending) return;
+    const requestedTargetId = mentionTargetId ?? quoted?.author_character_id ?? null;
     setSending(true);
     setFailure(null);
     setPartialNotice(null);
     setPendingText(text);
     setDraft("");
+    setMentionRange(null);
+    setMentionIndex(0);
     setSpeaker(null);
     setStreamingText({ ja: "", zh: "" });
     try {
@@ -125,7 +176,7 @@ export function GroupConversationView({
         group.id,
         {
           text,
-          mention_character_ids: targetId === ROUND_ROBIN_TARGET ? [] : [targetId],
+          mention_character_ids: requestedTargetId ? [requestedTargetId] : [],
           reply_to_message_id: replyId,
           client_idempotency_key: crypto.randomUUID(),
         },
@@ -161,7 +212,7 @@ export function GroupConversationView({
               segments: [],
               created_at: new Date().toISOString(),
               reply_to_message_id: replyId,
-              mentions: targetId === ROUND_ROBIN_TARGET ? [] : [targetId],
+              mentions: requestedTargetId ? [requestedTargetId] : [],
             },
             ...roleMessages,
           ]);
@@ -169,6 +220,9 @@ export function GroupConversationView({
           setPendingText(null);
           setStreamingText({ ja: "", zh: "" });
           setReplyId(null);
+          setMentionTargetId(null);
+          setMentionToken(null);
+          setMentionRange(null);
           window.dispatchEvent(new Event("eidolon:groups-changed"));
         } else if (event.type === "error") {
           setFailure(event.message || t.failed);
@@ -257,7 +311,10 @@ export function GroupConversationView({
                 onReply={() => {
                   if (message.author_kind !== "character") return;
                   setReplyId(message.id);
-                  if (message.author_character_id) setTargetId(message.author_character_id);
+                  if (message.author_character_id) {
+                    setMentionTargetId(null);
+                    setMentionToken(null);
+                  }
                 }}
               />
             ))}
@@ -292,33 +349,70 @@ export function GroupConversationView({
         )}
         <div className="flex items-end gap-2">
           <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <Select value={targetId ?? ""} onValueChange={(value) => setTargetId(value || null)} disabled={sending}>
-              <SelectTrigger aria-label={t.chooseTarget} className="w-full">
-                <MentionIcon className="size-4 text-muted-foreground" />
-                <SelectValue placeholder={t.chooseTarget} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ROUND_ROBIN_TARGET}>{copy.groupConversation.roundRobin}</SelectItem>
-                {currentMembers.map((member) => <SelectItem key={member.character_id} value={member.character_id}>{member.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Textarea
-              variant="composer"
-              rows={1}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  void submit();
-                }
-              }}
-              placeholder={t.placeholder}
-              aria-label={t.placeholder}
-              disabled={sending}
-            />
+            <div className="relative">
+              {mentionCandidates.length > 0 && (
+                <div id="group-mention-list" role="listbox" aria-label={t.chooseTarget} className="absolute right-0 bottom-full left-0 z-20 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1.5 text-popover-foreground shadow-md ring-1 ring-foreground/10 dark:ring-overlay-edge">
+                  {mentionCandidates.map((member, index) => (
+                    <button
+                      key={member.character_id}
+                      type="button"
+                      role="option"
+                      id={`group-mention-${member.character_id}`}
+                      aria-selected={index === mentionIndex}
+                      className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none", index === mentionIndex ? "bg-muted" : "hover:bg-muted/60")}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => chooseMention(member)}
+                    >
+                      <MarkedAvatar name={member.name} src={characterById.get(member.character_id)?.avatar_url} size="sm" />
+                      <span className="min-w-0 truncate">{member.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <Textarea
+                ref={textareaRef}
+                variant="composer"
+                rows={1}
+                value={draft}
+                onChange={(event) => updateDraft(event.target.value, event.target.selectionStart ?? event.target.value.length)}
+                onKeyDown={(event) => {
+                  if (mentionCandidates.length > 0) {
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setMentionIndex((index) => (index + 1) % mentionCandidates.length);
+                      return;
+                    }
+                    if (event.key === "ArrowUp") {
+                      event.preventDefault();
+                      setMentionIndex((index) => (index - 1 + mentionCandidates.length) % mentionCandidates.length);
+                      return;
+                    }
+                    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      chooseMention(mentionCandidates[mentionIndex]);
+                      return;
+                    }
+                  }
+                  if (event.key === "Escape" && mentionRange) {
+                    event.preventDefault();
+                    setMentionRange(null);
+                    return;
+                  }
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    void submit();
+                  }
+                }}
+                placeholder={t.placeholder}
+                aria-label={t.placeholder}
+                aria-expanded={mentionCandidates.length > 0}
+                aria-controls={mentionCandidates.length > 0 ? "group-mention-list" : undefined}
+                aria-activedescendant={mentionCandidates[mentionIndex] ? `group-mention-${mentionCandidates[mentionIndex].character_id}` : undefined}
+                disabled={sending}
+              />
+            </div>
           </div>
-          <Button type="submit" size="icon-lg" aria-label={t.send} disabled={!draft.trim() || !targetId || sending} onMouseDown={(event) => event.preventDefault()}>
+          <Button type="submit" size="icon-lg" aria-label={t.send} disabled={!draft.trim() || sending} onMouseDown={(event) => event.preventDefault()}>
             <SendIcon className="size-5" />
           </Button>
         </div>
@@ -335,12 +429,8 @@ export function GroupConversationView({
         onSaved={(nextGroup) => {
           live?.setGroup(nextGroup);
           setGroup(nextGroup);
-          setTargetId((current) =>
-            current === ROUND_ROBIN_TARGET ||
-            (current && nextGroup.current_members.some((member) => member.character_id === current))
-              ? current
-              : nextGroup.current_members[0]?.character_id ?? null,
-          );
+          setMentionTargetId((current) => current && nextGroup.current_members.some((member) => member.character_id === current) ? current : null);
+          setMentionToken((current) => current && nextGroup.current_members.some((member) => member.character_id === current.characterId) ? current : null);
           setReplyId((current) => {
             if (current === null) return null;
             const quotedMessage = messages.find((message) => message.id === current);

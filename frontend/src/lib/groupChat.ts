@@ -3,6 +3,16 @@ import type { GroupConversation, GroupMember, GroupMessage } from "@/lib/api";
 /** Select values cannot be empty; this value maps to an empty mentions request. */
 export const ROUND_ROBIN_TARGET = "__round_robin__";
 
+export type GroupMentionMatch = { start: number; end: number; query: string };
+
+export function groupMentionAt(value: string, cursor: number): GroupMentionMatch | null {
+  const before = value.slice(0, cursor);
+  const start = before.lastIndexOf("@");
+  if (start < 0 || (start > 0 && !/\s/.test(before[start - 1]))) return null;
+  const query = before.slice(start + 1);
+  return /\s/.test(query) ? null : { start, end: cursor, query };
+}
+
 export function groupMemberPatch(currentIds: readonly string[], selectedIds: readonly string[]): {
   add_character_ids: string[];
   remove_character_ids: string[];
