@@ -521,12 +521,13 @@ class PackagedGroup(_Strict):
     members: list[PackagedGroupMember]
     messages: list[PackagedGroupMessage]
     turns: list[PackagedGroupTurn]
+    avatar_character_id: Annotated[str, Field(min_length=1, max_length=100)] | None = None
 
     def kept(self) -> GroupPackage:
         turn_ids = {turn.id: str(turn.id) for turn in self.turns}
         message_ids = {message.id: index for index, message in enumerate(self.messages, 1)}
         return GroupPackage(
-            str(self.id), self.created_at, self.updated_at, self.title,
+            str(self.id), self.created_at, self.updated_at, self.title, self.avatar_character_id,
             tuple(member.kept() for member in self.members),
             tuple(message.kept(
                 str(self.id), message_id=message_ids[message.id],
@@ -541,6 +542,7 @@ class PackagedGroup(_Strict):
         return cls(
             id=group.id, created_at=group.created_at, updated_at=group.updated_at,
             title=group.title,
+            avatar_character_id=group.avatar_character_id,
             members=[PackagedGroupMember(**asdict(member)) for member in group.members],
             messages=[PackagedGroupMessage(
                 id=message.id, turn_id=message.turn_id,
@@ -652,6 +654,10 @@ class PackageData(_Strict):
                 raise ValueError("a group has an invalid current member count")
             if len({member.character_id for member in current}) != len(current):
                 raise ValueError("a group has a duplicate current member")
+            if group.avatar_character_id is not None and group.avatar_character_id not in {
+                member.character_id for member in current
+            }:
+                raise ValueError("a group avatar is not a current member")
             positions = [member.position for member in group.members]
             if len(set(positions)) != len(positions):
                 raise ValueError("two group members under one position")

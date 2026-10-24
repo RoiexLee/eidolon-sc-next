@@ -32,6 +32,7 @@ export { ArrowUp as SendIcon, Ellipsis as MoreIcon } from "lucide-react";
 
 // 群组对话：成员、引用和指定目标。
 export { AtSign as MentionIcon, Reply as ReplyIcon, Users as GroupIcon } from "lucide-react";
+export { Pencil as EditIcon } from "lucide-react";
 
 // 失败提示（components/app/FailureNotice）。
 export { CircleAlert as FailureIcon } from "lucide-react";

@@ -8,6 +8,7 @@ import { CallBar } from "@/components/conversations/CallBar";
 import { LiveGroupCallLayer } from "@/components/conversations/GroupCallLayer";
 import { GroupAvatar } from "@/components/conversations/GroupAvatar";
 import { GroupMemberDialog } from "@/components/conversations/GroupMemberDialog";
+import { GroupEditDialog } from "@/components/conversations/GroupEditDialog";
 import { useDirectory, useWide } from "@/components/conversations/ConversationDirectory";
 import { useFocusBack } from "@/components/conversations/useFocusBack";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
@@ -24,7 +25,7 @@ import {
 } from "@/lib/api";
 import { matchesSearch } from "@/lib/characterSearch";
 import { ALL_MEMBERS_TARGET, groupMentionAt, groupTitle, messageAuthor, messagePreview, messageText, replyTarget } from "@/lib/groupChat";
-import { BackIcon, GroupIcon, ReplyIcon, SendIcon } from "@/theme/icons";
+import { BackIcon, EditIcon, GroupIcon, ReplyIcon, SendIcon } from "@/theme/icons";
 import { PhoneIcon } from "@/theme/icons";
 import { Ja } from "@/theme/Ja";
 import { cn } from "@/lib/utils";
@@ -70,6 +71,7 @@ export function GroupConversationView({
   const [streamingText, setStreamingText] = useState({ ja: "", zh: "" });
   const [sending, setSending] = useState(false);
   const [memberDialogOpen, setMemberDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
 
   useEffect(() => {
     const current = openGroup(groupId, userId);
@@ -300,6 +302,15 @@ export function GroupConversationView({
         >
           <GroupIcon aria-hidden />
         </Button>
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          aria-label={t.groupEditTitle}
+          onClick={() => setEditDialogOpen(true)}
+          disabled={memberChangesLocked}
+        >
+          <EditIcon aria-hidden />
+        </Button>
       </header>
 
       {barShown && live && <CallBar ref={focus.note} call={groupSnapshot!.call as Extract<GroupCallSnapshot["call"], { phase: "dialing" | "connected" }>} name={groupTitle(group)} avatar={<GroupAvatar group={group} characters={characters} size="bar" />} onExpand={() => live.expand()} />}
@@ -450,6 +461,18 @@ export function GroupConversationView({
               ? current
               : null;
           });
+        }}
+      />
+      <GroupEditDialog
+        open={editDialogOpen}
+        group={group}
+        characters={characters}
+        locked={memberChangesLocked}
+        onOpenChange={setEditDialogOpen}
+        onSaved={(nextGroup) => {
+          live?.setGroup(nextGroup);
+          setGroup(nextGroup);
+          window.dispatchEvent(new Event("eidolon:groups-changed"));
         }}
       />
       {live && <div className="contents"><LiveGroupCallLayer live={live} characters={characters} layerRef={focus.layer} isFullScreen={isFullScreen} /></div>}

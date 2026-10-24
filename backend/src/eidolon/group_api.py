@@ -50,6 +50,7 @@ class NewGroup(BaseModel):
 
 class GroupPatch(BaseModel):
     title: str | None = Field(None, max_length=MAX_TITLE_LENGTH)
+    avatar_character_id: str | None = Field(None, max_length=100)
     add_character_ids: list[str] = Field(default_factory=list, max_length=MAX_MEMBERS)
     remove_character_ids: list[str] = Field(default_factory=list, max_length=MAX_MEMBERS)
 
@@ -81,6 +82,7 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
         return {
             "id": group.id,
             "title": group.title,
+            "avatar_character_id": group.avatar_character_id,
             "created_at": group.created_at,
             "updated_at": group.updated_at,
             "members": members,
@@ -141,6 +143,8 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
                     group_id,
                     title=body.title if "title" in body.model_fields_set else None,
                     set_title="title" in body.model_fields_set,
+                    avatar_character_id=body.avatar_character_id if "avatar_character_id" in body.model_fields_set else None,
+                    set_avatar="avatar_character_id" in body.model_fields_set,
                     add=adding,
                     remove=removing,
                     names=names,

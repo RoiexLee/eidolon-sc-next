@@ -76,6 +76,34 @@ async def test_group_title_can_be_cleared(make_client: ClientFactory) -> None:
     assert cleared.json()["title"] is None
 
 
+async def test_group_avatar_uses_a_current_member_and_clears_on_removal(
+    make_client: ClientFactory,
+) -> None:
+    client = make_client(FakeLLM())
+    backend = client._transport.app.state.backend  # type: ignore[attr-defined]
+    user_id = (await backend.store.first_user_named("producer")).id
+    group = await backend.group_store.create_group(user_id, ["mano", "kogane", "third"])
+    group_id = group.id
+
+    selected = await client.patch(
+        f"/api/groups/{group_id}", json={"avatar_character_id": "mano"}
+    )
+    assert selected.status_code == 200, selected.text
+    assert selected.json()["avatar_character_id"] == "mano"
+
+    rejected = await client.patch(
+        f"/api/groups/{group_id}", json={"avatar_character_id": "missing"}
+    )
+    assert rejected.status_code == 422
+
+    removed = await client.patch(
+        f"/api/groups/{group_id}",
+        json={"remove_character_ids": ["mano"]},
+    )
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["avatar_character_id"] is None
+
+
 async def test_group_tables_are_added_to_an_existing_single_chat_database(tmp_path) -> None:
     database = Database(tmp_path / "old.db")
     try:

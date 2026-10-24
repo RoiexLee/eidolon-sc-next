@@ -20,6 +20,10 @@ async def test_groups_export_import_and_repeat_is_idempotent(
     )
     assert created.status_code == 201, created.text
     group_id = created.json()["id"]
+    selected = await source.patch(
+        f"/api/groups/{group_id}", json={"avatar_character_id": "mano"}
+    )
+    assert selected.status_code == 200, selected.text
     turn = await source.post(
         f"/api/groups/{group_id}/turns",
         json={"text": "一起吃饭吗", "mention_character_ids": ["mano"]},
@@ -34,6 +38,7 @@ async def test_groups_export_import_and_repeat_is_idempotent(
     assert manifest["counts"] == {"groups": 1}
     assert len(data["groups"][0]["messages"]) == 2
     assert data["groups"][0]["turns"][0]["status"] == "done"
+    assert data["groups"][0]["avatar_character_id"] == "mano"
 
     target = make_client(FakeLLM(), "other", settings=replace(settings, database_path=tmp_path / "other.db"))
     imported = await target.post(
@@ -44,6 +49,7 @@ async def test_groups_export_import_and_repeat_is_idempotent(
     assert imported.json()["groups"] == 1
     groups = (await target.get("/api/groups")).json()
     assert len(groups) == 1 and groups[0]["title"] == "朋友们"
+    assert groups[0]["avatar_character_id"] == "mano"
     messages = (await target.get(f"/api/groups/{groups[0]['id']}/messages")).json()
     assert [message["author_kind"] for message in messages] == ["user", "character"]
     repeated = await target.post(

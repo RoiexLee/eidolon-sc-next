@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS group_conversations (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),
     title TEXT,
+    avatar_character_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     source_id TEXT,
@@ -153,6 +154,7 @@ class GroupPackage:
     created_at: str
     updated_at: str
     title: str | None
+    avatar_character_id: str | None
     members: tuple[GroupMember, ...]
     messages: tuple[GroupMessage, ...]
     turns: tuple[GroupTurn, ...]
@@ -171,6 +173,7 @@ class GroupConversation:
     id: str
     user_id: str
     title: str | None
+    avatar_character_id: str | None
     created_at: str
     updated_at: str
     members: tuple[GroupMember, ...] = ()
@@ -247,10 +250,10 @@ class GroupStore:
         if len(set(ids)) != len(ids):
             raise GroupMembersInvalid("群组成员不能重复")
         now = _now()
-        group = GroupConversation(uuid.uuid4().hex, user_id, _title(title), now, now)
+        group = GroupConversation(uuid.uuid4().hex, user_id, _title(title), None, now, now)
         snapshots = {character_id: (names or {}).get(character_id, character_id) for character_id in ids}
         await self._db.write(_insert_group, group, ids, snapshots)
-        return GroupConversation(group.id, group.user_id, group.title, group.created_at, group.updated_at,
+        return GroupConversation(group.id, group.user_id, group.title, group.avatar_character_id, group.created_at, group.updated_at,
                                  tuple(GroupMember(character_id, i, now, None, snapshots[character_id])
                                        for i, character_id in enumerate(ids)))
 
@@ -267,6 +270,8 @@ class GroupStore:
         *,
         title: str | None = None,
         set_title: bool = False,
+        avatar_character_id: str | None = None,
+        set_avatar: bool = False,
         add: Sequence[str] = (),
         remove: Sequence[str] = (),
         names: Mapping[str, str] | None = None,
@@ -279,7 +284,8 @@ class GroupStore:
         await self._db.write(
             _update_group, user_id, group_id,
             _title(title) if set_title else None,
-            adding, removing, names or {}, set_title,
+            avatar_character_id if set_avatar else None,
+            adding, removing, names or {}, set_title, set_avatar,
         )
 
     async def delete_group(self, user_id: str, group_id: str) -> bool:
@@ -354,6 +360,8 @@ class GroupStore:
 def _open(db: sqlite3.Connection) -> None:
     db.executescript(_SCHEMA)
     columns = {row[1] for row in db.execute("PRAGMA table_info(group_conversations)")}
+    if "avatar_character_id" not in columns:
+        db.execute("ALTER TABLE group_conversations ADD COLUMN avatar_character_id TEXT")
     if "source_id" not in columns:
         db.execute("ALTER TABLE group_conversations ADD COLUMN source_id TEXT")
     if "source_created_at" not in columns:
@@ -426,22 +434,22 @@ def _rows(db: sqlite3.Connection, group_id: str) -> tuple[tuple[GroupMember, ...
 def _group(db: sqlite3.Connection, group_id: str, user_id: str) -> GroupConversation | None:
     cursor = by_name(db)
     row = cursor.execute(
-        "SELECT id, user_id, title, created_at, updated_at FROM group_conversations "
+        "SELECT id, user_id, title, avatar_character_id, created_at, updated_at FROM group_conversations "
         "WHERE id = ? AND user_id = ?", (group_id, user_id),
     ).fetchone()
     if row is None:
         return None
     members, last = _rows(db, group_id)
-    return GroupConversation(row["id"], row["user_id"], row["title"], row["created_at"], row["updated_at"], members, last)
+    return GroupConversation(row["id"], row["user_id"], row["title"], row["avatar_character_id"], row["created_at"], row["updated_at"], members, last)
 
 
 def _groups(db: sqlite3.Connection, user_id: str) -> list[GroupConversation]:
     rows = by_name(db).execute(
-        "SELECT id, user_id, title, created_at, updated_at FROM group_conversations "
+        "SELECT id, user_id, title, avatar_character_id, created_at, updated_at FROM group_conversations "
         "WHERE user_id = ? ORDER BY updated_at DESC, id DESC", (user_id,)
     ).fetchall()
     return [
-        GroupConversation(row["id"], row["user_id"], row["title"], row["created_at"], row["updated_at"], *_rows(db, row["id"]))
+        GroupConversation(row["id"], row["user_id"], row["title"], row["avatar_character_id"], row["created_at"], row["updated_at"], *_rows(db, row["id"]))
         for row in rows
     ]
 
@@ -451,10 +459,12 @@ def _update_group(
     user_id: str,
     group_id: str,
     title: str | None,
+    avatar_character_id: str | None,
     adding: Sequence[str],
     removing: Sequence[str],
     names: Mapping[str, str],
     title_given: bool,
+    avatar_given: bool,
 ) -> None:
     cursor = by_name(db)
     if cursor.execute("SELECT 1 FROM group_conversations WHERE id = ? AND user_id = ?", (group_id, user_id)).fetchone() is None:
@@ -473,6 +483,14 @@ def _update_group(
         raise GroupMembersInvalid("成员已经在群组中")
     result = active - set(removing) | set(adding)
     _check_member_count(tuple(result))
+    current_avatar = cursor.execute(
+        "SELECT avatar_character_id FROM group_conversations WHERE id = ?", (group_id,)
+    ).fetchone()["avatar_character_id"]
+    next_avatar = avatar_character_id if avatar_given else current_avatar
+    if next_avatar is not None and next_avatar not in result:
+        if avatar_given:
+            raise GroupMembersInvalid("群组头像必须来自当前成员")
+        next_avatar = None
     now = _now()
     for character_id in removing:
         db.execute(
@@ -488,8 +506,9 @@ def _update_group(
         )
         next_position += 1
     db.execute(
-        "UPDATE group_conversations SET title = CASE WHEN ? THEN ? ELSE title END, updated_at = ? WHERE id = ?",
-        (title_given, title, now, group_id),
+        "UPDATE group_conversations SET title = CASE WHEN ? THEN ? ELSE title END, "
+        "avatar_character_id = ?, updated_at = ? WHERE id = ?",
+        (title_given, title, next_avatar, now, group_id),
     )
 
 
@@ -714,7 +733,7 @@ def _package_groups(db: sqlite3.Connection, user_id: str) -> list[GroupPackage]:
     """Read groups and their ended turns/messages without exposing SQL to callers."""
     cursor = by_name(db)
     groups = cursor.execute(
-        "SELECT id, title, created_at, updated_at FROM group_conversations "
+        "SELECT id, title, avatar_character_id, created_at, updated_at FROM group_conversations "
         "WHERE user_id = ? ORDER BY created_at, id", (user_id,)
     ).fetchall()
     result: list[GroupPackage] = []
@@ -746,7 +765,7 @@ def _package_groups(db: sqlite3.Connection, user_id: str) -> list[GroupPackage]:
             if row["turn_id"] is None or row["turn_id"] in ended
         )
         result.append(GroupPackage(
-            group["id"], group["created_at"], group["updated_at"], group["title"],
+            group["id"], group["created_at"], group["updated_at"], group["title"], group["avatar_character_id"],
             members, messages, turns,
         ))
     return result
@@ -767,11 +786,15 @@ def _write_package(
             continue
         current = [member for member in group.members if member.removed_at is None]
         _check_member_count(tuple(member.character_id for member in current))
+        if group.avatar_character_id is not None and group.avatar_character_id not in {
+            member.character_id for member in current
+        }:
+            raise GroupMembersInvalid("群组头像必须来自当前成员")
         new_group_id = uuid.uuid4().hex
         cursor.execute(
-            "INSERT INTO group_conversations(id, user_id, title, created_at, updated_at, source_id, source_created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (new_group_id, user_id, group.title, group.created_at, group.updated_at, group.id, group.created_at),
+            "INSERT INTO group_conversations(id, user_id, title, avatar_character_id, created_at, updated_at, source_id, source_created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_group_id, user_id, group.title, group.avatar_character_id, group.created_at, group.updated_at, group.id, group.created_at),
         )
         cursor.executemany(
             "INSERT INTO group_members(group_id, character_id, position, added_at, removed_at, name_snapshot) "

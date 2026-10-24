@@ -136,6 +136,7 @@ export type GroupMessageSummary = Pick<
 export type GroupConversation = {
   id: string;
   title: string | null;
+  avatar_character_id?: string | null;
   created_at: string;
   updated_at: string;
   members: GroupMember[];
@@ -795,6 +796,8 @@ export async function getGroup(groupId: string): Promise<GroupConversation> {
 }
 
 export type GroupPatchInput = {
+  title?: string | null;
+  avatar_character_id?: string | null;
   add_character_ids: readonly string[];
   remove_character_ids: readonly string[];
 };
