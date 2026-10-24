@@ -417,7 +417,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
         preferences: { load: loadCallPreferences, save: saveCallPreferences },
         voice,
         tones,
-        onMessagesChanged: refresh,
+        onMessagesChanged: () => window.dispatchEvent(new Event("eidolon:groups-changed")),
       });
       heldRef.current = live;
       setHeld(live);

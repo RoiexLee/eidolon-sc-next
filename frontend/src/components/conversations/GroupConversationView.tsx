@@ -169,6 +169,7 @@ export function GroupConversationView({
           setPendingText(null);
           setStreamingText({ ja: "", zh: "" });
           setReplyId(null);
+          window.dispatchEvent(new Event("eidolon:groups-changed"));
         } else if (event.type === "error") {
           setFailure(event.message || t.failed);
           setDraft(text);

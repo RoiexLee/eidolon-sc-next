@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { LatestConversation } from "@/lib/api";
-import { arrange, dayOf, hasUnseen, previewOf, unitsOf } from "@/lib/conversationList";
+import type { GroupConversation, LatestConversation } from "@/lib/api";
+import { arrange, arrangeConversations, dayOf, hasUnseen, previewOf, unitsOf } from "@/lib/conversationList";
 
 function latest(last: LatestConversation["last_message"]): LatestConversation {
   return {
@@ -235,6 +235,76 @@ describe("arrange 加上隐藏、置顶和搜索", () => {
     const everyone = characters.map((c) => c.id);
 
     expect(arranged({ preferences: { hidden: everyone, pinned: [] } })).toEqual({ rows: [], hiddenCount: 5 });
+  });
+});
+
+describe("arrangeConversations", () => {
+  const characters = [idol("mano"), idol("hiori"), idol("meguru")];
+
+  function group(id: string, createdAt: string, lastMessageAt: string | null = null): GroupConversation {
+    return {
+      id,
+      title: null,
+      created_at: createdAt,
+      updated_at: lastMessageAt ?? createdAt,
+      members: [],
+      current_members: [],
+      history_members: [],
+      last_message: lastMessageAt === null ? null : {
+        id: 1,
+        author_kind: "user",
+        author_character_id: null,
+        author_name_snapshot: null,
+        text: "早",
+        created_at: lastMessageAt,
+      },
+    };
+  }
+
+  it("把群组和私人对话按最近活动合并排序", () => {
+    const latestByCharacter = Object.fromEntries([
+      ["mano", latest({ role: "user", text: "早", ja: null, zh: null, created_at: "2026-10-02T00:00:00Z" })],
+      ["hiori", latest({ role: "user", text: "早", ja: null, zh: null, created_at: "2026-10-04T00:00:00Z" })],
+    ]);
+
+    expect(
+      arrangeConversations(characters, latestByCharacter, [group("g1", "2026-10-01T00:00:00Z", "2026-10-03T00:00:00Z")]).rows.map((row) =>
+        row.kind === "group" ? row.group.id : row.row.character.id,
+      ),
+    ).toEqual(["hiori", "g1", "mano", "meguru"]);
+  });
+
+  it("没有群组消息时按群组创建时间参与排序", () => {
+    expect(
+      arrangeConversations(
+        characters,
+        {},
+        [group("old", "2026-10-01T00:00:00Z"), group("new", "2026-10-03T00:00:00Z")],
+      ).rows.map((row) => (row.kind === "group" ? row.group.id : row.row.character.id)),
+    ).toEqual(["new", "old", "mano", "hiori", "meguru"]);
+  });
+
+  it("活动时间相同时保持输入顺序", () => {
+    const at = "2026-10-03T00:00:00Z";
+    expect(
+      arrangeConversations(characters, {}, [group("first", at), group("second", at)]).rows.map((row) =>
+        row.kind === "group" ? row.group.id : row.row.character.id,
+      ),
+    ).toEqual(["first", "second", "mano", "hiori", "meguru"]);
+  });
+
+  it("私人对话的置顶仍在群组和未置顶私人对话之前", () => {
+    const latestByCharacter = {
+      mano: latest({ role: "user", text: "早", ja: null, zh: null, created_at: "2026-10-01T00:00:00Z" }),
+    };
+    const rows = arrangeConversations(
+      characters,
+      latestByCharacter,
+      [group("new", "2026-10-03T00:00:00Z")],
+      { preferences: { hidden: [], pinned: ["mano"] } },
+    ).rows;
+
+    expect(rows[0]).toMatchObject({ kind: "character", row: { character: { id: "mano" }, isPinned: true } });
   });
 });
 

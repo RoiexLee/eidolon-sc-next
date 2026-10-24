@@ -1,7 +1,7 @@
 // 消息列表每一行的内容：她最新一次对话的最后一句和时间（spec「信息架构」）；以及显示哪些行、按什么顺序排。
 // 只给出结构，文字由界面按当前语言拼（`copy.conversationList`）。
 
-import type { EventKind, LatestConversation } from "@/lib/api";
+import type { EventKind, GroupConversation, LatestConversation } from "@/lib/api";
 import { matchesSearch, type Searchable } from "@/lib/characterSearch";
 import { NO_PREFERENCES, type ListPreferences } from "@/lib/listPreferences";
 
@@ -31,6 +31,10 @@ export function previewOfOne(conversation: Pick<LatestConversation, "created_at"
  * （GLOSSARY.md「没看过的搭话」，时间前面的圆点据此显示）。 */
 export type ListRow<C> = { character: C; isPinned: boolean; isHidden: boolean; isUnseen: boolean };
 
+export type ConversationRow<C> =
+  | { kind: "character"; row: ListRow<C> }
+  | { kind: "group"; group: GroupConversation };
+
 export type ArrangeOptions = {
   /** 这台设备上的隐藏和置顶。 */
   preferences?: ListPreferences;
@@ -58,10 +62,7 @@ export function arrange<C extends Searchable & { id: string }>(
   const hidden = new Set(preferences.hidden);
   const pinned = new Set(preferences.pinned);
   const isSearching = query.trim() !== "";
-  const lastTalked = (c: C) => {
-    const preview = previewOf(latest[c.id]);
-    return preview ? Date.parse(preview.at) : -Infinity;
-  };
+  const lastTalked = (c: C) => characterActivityAt(latest[c.id]);
   // sort 是稳定的：时间相同的保持原来的先后。
   const rows = characters
     .filter((c) => (isSearching ? matchesSearch(c, query) : !hidden.has(c.id) || keep.includes(c.id)))
@@ -77,6 +78,52 @@ export function arrange<C extends Searchable & { id: string }>(
     .sort((a, b) => Number(b.row.isPinned) - Number(a.row.isPinned) || (a.at === b.at ? 0 : b.at > a.at ? 1 : -1))
     .map(({ row }) => row);
   return { rows, hiddenCount: characters.filter((c) => hidden.has(c.id)).length };
+}
+
+/**
+ * Private and group conversations share one list. Characters keep their existing pin/hide rules;
+ * groups participate in the unpinned recent-activity order without gaining device preferences.
+ */
+export function arrangeConversations<C extends Searchable & { id: string }>(
+  characters: C[],
+  latest: Record<string, LatestConversation>,
+  groups: readonly GroupConversation[],
+  options: ArrangeOptions = {},
+): { rows: ConversationRow<C>[]; hiddenCount: number } {
+  const arrangedCharacters = arrange(characters, latest, options);
+  const characterRows = arrangedCharacters.rows.map((row) => ({
+    kind: "character" as const,
+    row,
+    at: characterActivityAt(latest[row.character.id]),
+    pinned: row.isPinned,
+  }));
+  const groupRows = groups.map((group) => ({
+    kind: "group" as const,
+    group,
+    at: groupActivityAt(group),
+    pinned: false,
+  }));
+  const rows = [...characterRows, ...groupRows]
+    .map((row, order) => ({ row, order }))
+    .sort((a, b) => Number(b.row.pinned) - Number(a.row.pinned) || compareActivity(b.row.at, a.row.at) || a.order - b.order)
+    .map(({ row }) => row);
+  return { rows, hiddenCount: arrangedCharacters.hiddenCount };
+}
+
+function characterActivityAt(conversation: LatestConversation | undefined): number {
+  const preview = previewOf(conversation);
+  return preview ? Date.parse(preview.at) : -Infinity;
+}
+
+function groupActivityAt(group: GroupConversation): number {
+  return Date.parse(group.last_message?.created_at ?? group.created_at);
+}
+
+function compareActivity(a: number, b: number): number {
+  if (a === b) return 0;
+  if (a === -Infinity) return -1;
+  if (b === -Infinity) return 1;
+  return a - b;
 }
 
 /** 导航「对话」上的点：没有搜索时的列表里，有一行有没看过的搭话（`arrange` 的 `isUnseen`）。隐藏了的不在列表里，不算。 */

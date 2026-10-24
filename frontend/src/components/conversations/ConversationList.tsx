@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { copy } from "@/i18n";
 import { listGroups, type Character, type GroupConversation } from "@/lib/api";
 import { showTime } from "@/lib/callTime";
-import { arrange, dayOf, previewOf, type ListRow, type Preview } from "@/lib/conversationList";
+import { arrangeConversations, dayOf, previewOf, type ListRow, type Preview } from "@/lib/conversationList";
 import { groupAvatarMembers, groupTitle } from "@/lib/groupChat";
 import { pin, setShown, unpin } from "@/lib/listPreferences";
 import { cn } from "@/lib/utils";
@@ -44,8 +44,8 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
   const [query, setQuery] = useState("");
   const [isFilterOpen, setFilterOpen] = useState(false);
   const keep = [selectedId, call?.characterId].filter((id): id is string => !!id);
-  const shown = characters && arrange(characters, latest, { preferences, query, keep, onScreen });
-  const hiddenCount = shown?.hiddenCount ?? 0;
+  const arranged = characters && arrangeConversations(characters, latest, groups ?? [], { preferences, query, keep, onScreen });
+  const hiddenCount = arranged?.hiddenCount ?? 0;
   // 搜索时隐藏的人照样出现，「已隐藏 n 位」和全部隐藏的空状态只在没有搜索时出现。
   const showsHidden = query.trim() === "" && hiddenCount > 0;
 
@@ -110,9 +110,9 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
               )}
             </EmptyContent>
           </Empty>
-        ) : !shown ? (
+        ) : !arranged ? (
           <Loading />
-        ) : shown.rows.length === 0 && showsHidden ? (
+        ) : arranged.rows.length === 0 && showsHidden ? (
           <Empty>
             <EmptyHeader>
               <EmptyTitle>{t.allHidden}</EmptyTitle>
@@ -123,31 +123,38 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
               </Button>
             </EmptyContent>
           </Empty>
-        ) : shown.rows.length === 0 ? (
+        ) : arranged.rows.length === 0 ? (
           <p className="px-4 py-6 text-center text-preview text-muted-foreground">{t.noMatch}</p>
         ) : (
           <>
             <ul aria-label={t.title}>
-              {shown.rows.map((row) => {
-                const c = row.character;
-                return (
-                  <li key={c.id}>
-                    <Row
-                      row={row}
-                      preview={previewOf(latest[c.id])}
-                      call={call?.characterId === c.id ? call : null}
-                      isSelected={c.id === selectedId}
-                      now={now}
-                      onSelect={() => {
-                        if (c.id === selectedId) return;
-                        go(`/conversation/${c.id}`);
-                      }}
-                      onTogglePin={() => tidy((p) => (row.isPinned ? unpin(p, c.id) : pin(p, c.id)))}
-                      onToggleHidden={() => tidy((p) => setShown(p, [c.id], row.isHidden))}
+              {arranged.rows.map((entry) =>
+                entry.kind === "group" ? (
+                  <li key={entry.group.id}>
+                    <GroupRow
+                      group={entry.group}
+                      isSelected={entry.group.id === selectedGroupId}
+                      onSelect={() => go(`/conversation/group/${entry.group.id}`)}
                     />
                   </li>
-                );
-              })}
+                ) : (
+                  <li key={entry.row.character.id}>
+                    <Row
+                      row={entry.row}
+                      preview={previewOf(latest[entry.row.character.id])}
+                      call={call?.characterId === entry.row.character.id ? call : null}
+                      isSelected={entry.row.character.id === selectedId}
+                      now={now}
+                      onSelect={() => {
+                        if (entry.row.character.id === selectedId) return;
+                        go(`/conversation/${entry.row.character.id}`);
+                      }}
+                      onTogglePin={() => tidy((p) => (entry.row.isPinned ? unpin(p, entry.row.character.id) : pin(p, entry.row.character.id)))}
+                      onToggleHidden={() => tidy((p) => setShown(p, [entry.row.character.id], entry.row.isHidden))}
+                    />
+                  </li>
+                ),
+              )}
             </ul>
             {showsHidden && (
               <button
@@ -160,15 +167,12 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
             )}
           </>
         )}
-        {!failure && shown && (
+        {!failure && arranged && (
           <GroupSection
-            groups={groups}
-            selectedGroupId={selectedGroupId}
             onCreate={() => setCreatingGroup(true)}
-            onSelect={(id) => go(`/conversation/group/${id}`)}
-            failure={groupFailure}
           />
         )}
+        {groupFailure && <p className="px-4 pb-3 text-meta text-muted-foreground">{groupFailure}</p>}
       </div>
       {characters && (
         <GroupCreateDialog
@@ -186,17 +190,9 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
 }
 
 function GroupSection({
-  groups,
-  selectedGroupId,
   onCreate,
-  onSelect,
-  failure,
 }: {
-  groups: GroupConversation[] | null;
-  selectedGroupId: string | null;
   onCreate: () => void;
-  onSelect: (id: string) => void;
-  failure: string | null;
 }) {
   return (
     <section className="border-t" aria-label={t.groupsTitle}>
@@ -207,38 +203,37 @@ function GroupSection({
           {t.createGroup}
         </Button>
       </div>
-      {failure ? (
-        <p className="px-4 pb-3 text-meta text-muted-foreground">{failure}</p>
-      ) : groups === null ? (
-        <p className="px-4 pb-3 text-meta text-muted-foreground">{t.groupLoading}</p>
-      ) : groups.length === 0 ? (
-        <p className="px-4 pb-3 text-meta text-muted-foreground">{t.groupCreateDescription}</p>
-      ) : (
-        <ul>
-          {groups.map((group) => (
-            <li key={group.id}>
-              <button
-                type="button"
-                aria-current={selectedGroupId === group.id ? "page" : undefined}
-                onClick={() => onSelect(group.id)}
-                className={cn(
-                  "flex w-full items-center gap-3 px-4 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
-                  selectedGroupId === group.id ? "bg-muted" : "hover:bg-muted/60",
-                )}
-              >
-                <GroupAvatar group={group} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-row-name">{groupTitle(group)}</span>
-                  <span className="block truncate text-preview text-muted-foreground">
-                    {t.groupMembers(String(group.current_members.length))}
-                  </span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
     </section>
+  );
+}
+
+function GroupRow({
+  group,
+  isSelected,
+  onSelect,
+}: {
+  group: GroupConversation;
+  isSelected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-current={isSelected ? "page" : undefined}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-center gap-3 px-4 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+        isSelected ? "bg-muted" : "hover:bg-muted/60",
+      )}
+    >
+      <GroupAvatar group={group} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-row-name">{groupTitle(group)}</span>
+        <span className="block truncate text-preview text-muted-foreground">
+          {t.groupMembers(String(group.current_members.length))}
+        </span>
+      </span>
+    </button>
   );
 }
 
