@@ -1,6 +1,6 @@
 # 群组对话后续修复 23：角色语音切换完整性
 
-Status: draft
+Status: done
 
 ## 目标
 
@@ -18,3 +18,8 @@ Status: draft
 - 每位 speaker 的 `speaker-started`、segment 完成、`speaker-ended` 严格成对串行。
 - 下一位开始前上一位所有已生成音频已 flush；取消时不遗留 running 回合。
 - 单角色通话和群聊文字回合不回归。
+
+## 实现结果
+
+- 角色切换前先 flush 最后一个 segment，再等待输出传输层发出的 `BotStoppedSpeakingFrame`，随后才发送 `speaker-ended` 和下一位的 voice 更新；文字模式跳过音频等待。取消时等待会被终止，异常情况下有超时兜底。
+- Fake TTS 在 segment flush 时模拟实际音频和停止帧，浏览器测试断言停止事件先于下一次 voice 更新。

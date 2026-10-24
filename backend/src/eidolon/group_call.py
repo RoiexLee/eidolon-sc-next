@@ -6,11 +6,17 @@ import asyncio
 import logging
 from contextlib import aclosing
 
-from pipecat.frames.frames import EndWorkerFrame, TTSUpdateSettingsFrame
+from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
+    EndWorkerFrame,
+    Frame,
+    TTSUpdateSettingsFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frameworks.rtvi.frames import RTVIClientMessageFrame
 from pipecat.services.fish.tts import FishAudioTTSService
 
-from eidolon.call import Call, CallTurns, SegmentCompleteFrame
+from eidolon.call import FINISH_TIMEOUT, Call, CallTurns, SegmentCompleteFrame
 from eidolon.engine import CallTurnRecorded
 from eidolon.group_engine import (
     FAILED,
@@ -41,6 +47,17 @@ class GroupCallTurns(CallTurns):
         self._groups = groups
         self._group_engine = engine
         self._voice_ids = dict(call.group.voice_ids if call.group is not None else ())
+        self._speaker_done: asyncio.Event | None = None
+        self._text_only = call.muted
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if isinstance(frame, BotStoppedSpeakingFrame) and self._speaker_done is not None:
+            self._speaker_done.set()
+        elif isinstance(frame, RTVIClientMessageFrame) and frame.type == "mute":
+            data = frame.data if isinstance(frame.data, dict) else {}
+            if isinstance(data.get("muted"), bool):
+                self._text_only = data["muted"]
+        await super().process_frame(frame, direction)
 
     async def _end(self, ending) -> None:
         """End without writing a single-character conversation event."""
@@ -86,11 +103,10 @@ class GroupCallTurns(CallTurns):
                         break
                     if isinstance(event, GroupSpeaker):
                         if current_speaker is not None:
-                            if current_segment is not None:
-                                await self._flush_segment(number, current_segment)
-                            await self._send({"type": "speaker-ended", "speaker_id": current_speaker})
+                            await self._finish_speaker(number, current_speaker, current_segment, stop)
                             current_segment = None
                         current_speaker = event.author_character_id
+                        self._speaker_done = asyncio.Event()
                         voice_id = self._voice_ids.get(current_speaker)
                         if voice_id is None:
                             raise RuntimeError(f"群组成员缺少音色：{current_speaker}")
@@ -133,9 +149,7 @@ class GroupCallTurns(CallTurns):
                     elif isinstance(event, GroupTurnDone):
                         completed = True
                         if current_speaker is not None:
-                            if current_segment is not None:
-                                await self._flush_segment(number, current_segment)
-                            await self._send({"type": "speaker-ended", "speaker_id": current_speaker})
+                            await self._finish_speaker(number, current_speaker, current_segment, stop)
                             current_speaker = None
                         await self._carry_out(self._turns.reply_recorded())
                         self._outcome.turn_recorded(CallTurnRecorded())
@@ -151,7 +165,7 @@ class GroupCallTurns(CallTurns):
                     elif isinstance(event, GroupTurnError):
                         completed = True
                         if current_speaker is not None:
-                            await self._send({"type": "speaker-ended", "speaker_id": current_speaker})
+                            await self._finish_speaker(number, current_speaker, None, stop)
                             current_speaker = None
                         await self._send({"type": "error", "message": event.message, "reply": number})
         except GroupTurnBusy as error:
@@ -162,7 +176,7 @@ class GroupCallTurns(CallTurns):
             await self._send({"type": "error", "message": FAILED, "reply": number})
         finally:
             if current_speaker is not None:
-                await self._send({"type": "speaker-ended", "speaker_id": current_speaker})
+                await self._finish_speaker(number, current_speaker, current_segment, stop)
             if group_turn is not None and not completed:
                 await self._groups.fail_turn(group_turn.id)
 
@@ -172,4 +186,29 @@ class GroupCallTurns(CallTurns):
             SegmentCompleteFrame(reply, segment),
             FrameDirection.DOWNSTREAM,
         )
+
+    async def _finish_speaker(
+        self, reply: int, speaker_id: str, segment: int | None, stop: asyncio.Event
+    ) -> None:
+        if segment is not None:
+            await self._flush_segment(reply, segment)
+        if not self._text_only and self._speaker_done is not None:
+            if not stop.is_set():
+                stopped = asyncio.create_task(self._speaker_done.wait())
+                interrupted = asyncio.create_task(stop.wait())
+                # shortcut: a TTS error or empty segment has no stop frame; use the
+                # existing Fish TTS timeout so a broken call cannot remain running forever.
+                try:
+                    done, _ = await asyncio.wait(
+                        (stopped, interrupted),
+                        timeout=FINISH_TIMEOUT,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        log.warning("group speaker %s did not stop in time", speaker_id)
+                finally:
+                    for task in (stopped, interrupted):
+                        task.cancel()
+                    await asyncio.gather(stopped, interrupted, return_exceptions=True)
+        await self._send({"type": "speaker-ended", "speaker_id": speaker_id})
 

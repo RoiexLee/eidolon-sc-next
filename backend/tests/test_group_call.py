@@ -39,7 +39,10 @@ async def test_group_call_emits_speakers_and_switches_voice(
     ]
     assert speakers == ["mano", "kogane"]
     assert messages[-1]["type"] == "done"
-    assert speech.ttss[0].voice_changes[-1] == "kogane-voice"
+    tts = speech.ttss[0]
+    assert tts.voice_changes[-1] == "kogane-voice"
+    assert tts.events.index(("segment", None)) < tts.events.index(("stopped", None))
+    assert tts.events.index(("stopped", None)) < tts.events.index(("voice", "kogane-voice"))
 
     recorded = (await client.get(f"/api/groups/{group_id}/messages")).json()
     assert [message["author_character_id"] for message in recorded if message["author_kind"] == "character"] == [
@@ -68,6 +71,22 @@ async def test_group_call_checks_group_ownership(
     assert (await stranger.get(f"/api/ice-servers?group_id={group_id}")).status_code == 404
     assert (await browser.call(stranger, group_id=group_id)).status_code == 404
     assert (await browser.call(client, group_id="missing")).status_code == 404
+
+
+async def test_muted_group_call_does_not_wait_for_audio(
+    make_client: ClientFactory, browser: Browser
+):
+    client = make_client(
+        FakeLLM(["<ja>ほわっ</ja><zh>你好</zh>"])
+    )
+    group_id = await create_group(client)
+
+    assert (await browser.call(client, group_id=group_id, muted=True)).status_code == 200
+    await browser.connect()
+    browser.type("只看文字")
+    messages = await browser.turn()
+
+    assert messages[-1]["type"] == "done"
 
 
 async def test_group_call_reports_busy_group_turn(

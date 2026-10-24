@@ -23,12 +23,14 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
     Frame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TTSUpdateSettingsFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
+    TTSStoppedFrame,
 )
 from pipecat.services.settings import STTSettings, TTSSettings
 from pipecat.services.stt_service import STTService
@@ -38,7 +40,7 @@ from pipecat.utils.time import time_now_iso8601
 
 from eidolon.assembly import Backend, build
 from eidolon.billing import bill
-from eidolon.call import SONIOX_FOLLOW_ON_TIMEOUT, Hearing
+from eidolon.call import SONIOX_FOLLOW_ON_TIMEOUT, Hearing, SegmentCompleteFrame, SegmentTextFrame
 from eidolon.config import (
     BailianRegion,
     ChatModelSettings,
@@ -722,15 +724,36 @@ class FakeTTS(TTSService):
 
     def __init__(self, api_key: str, model: str, voice_id: str, sample_rate: int) -> None:
         super().__init__(
-            sample_rate=sample_rate, settings=TTSSettings(model=model, voice=None, language=None)
+            sample_rate=sample_rate,
+            settings=TTSSettings(model=model, voice=None, language=None),
         )
         self.api_key = api_key
         self.model = model
         self.voice_id = voice_id
         self.voice_changes = [voice_id]
         self.voiced: list[str] = []
+        self.events: list[tuple[str, str | None]] = []
+        self._segment_text = ""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if isinstance(frame, SegmentTextFrame):
+            self._segment_text += frame.text
+            return
+        if isinstance(frame, SegmentCompleteFrame):
+            self.events.append(("segment", None))
+            if self._segment_text:
+                async for generated in self.run_tts(self._segment_text, self.create_context_id()):
+                    if generated is not None:
+                        await self.push_frame(generated, direction)
+                await self.push_frame(TTSStoppedFrame(), direction)
+                self._segment_text = ""
+            return
+        if isinstance(frame, TTSUpdateSettingsFrame) and frame.delta is not None:
+            voice = getattr(frame.delta, "voice", None)
+            if voice is not None:
+                self.events.append(("voice", voice))
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self.events.append(("stopped", None))
         await super().process_frame(frame, direction)
         if isinstance(frame, TTSUpdateSettingsFrame) and frame.delta is not None:
             voice = getattr(frame.delta, "voice", None)
@@ -744,7 +767,7 @@ class FakeTTS(TTSService):
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         self.voiced.append(text)
         samples = self.sample_rate // 10
-        yield TTSAudioRawFrame(b"\0\0" * samples, self.sample_rate, 1, context_id=context_id)
+        yield TTSAudioRawFrame(b"\x01\x01" * samples, self.sample_rate, 1, context_id=context_id)
 
 
 class FakeSpeech:
@@ -779,9 +802,7 @@ class FakeSpeech:
         self.stts.append(FakeSTT(key))
         return Hearing(self.stts[-1], self.follow_on_timeout)
 
-    def tts(
-        self, api_key: str, model: str, voice_id: str, sample_rate: int, *, own: bool
-    ) -> FakeTTS:
+    def tts(self, api_key: str, model: str, voice_id: str, sample_rate: int, *, own: bool) -> FakeTTS:
         self.own.append(("tts", own))
         self.ttss.append(FakeTTS(api_key, model, voice_id, sample_rate))
         return self.ttss[-1]
