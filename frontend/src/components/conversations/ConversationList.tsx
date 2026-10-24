@@ -52,13 +52,17 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
   useEffect(() => {
     if (!account) return;
     let active = true;
-    void listGroups().then((next) => active && setGroups(next)).catch((reason) => {
+    void listGroups().then((next) => {
+      if (!active) return;
+      setGroups(next);
+      setGroupFailure(null);
+    }).catch((reason) => {
       if (active) setGroupFailure(reason instanceof Error ? reason.message : t.groupLoadFailed);
     });
     return () => {
       active = false;
     };
-  }, [account]);
+  }, [account, selectedGroupId]);
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
