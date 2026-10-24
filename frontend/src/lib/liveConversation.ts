@@ -322,6 +322,7 @@ export type Ports = {
 };
 
 export class LiveConversation {
+  readonly kind = "conversation" as const;
   private state: State;
   private published: Snapshot;
   private listeners = new Set<() => void>();
@@ -683,6 +684,14 @@ export class LiveConversation {
 
   /** An event of the call under way: one that is over never gets here (see `startCall`). */
   private onCallEvent(event: CallEvent): void {
+    // Group calls share the WebRTC event channel but have their own session and message store.
+    // They must never enter the single-character log, affinity or reward machinery.
+    if (
+      event.type === "speaker-started" ||
+      event.type === "speaker-ended" ||
+      (event.type === "done" && "group_id" in event.message) ||
+      (event.type === "partial" && "group_id" in event.message)
+    ) return;
     const stand = this.directed(event);
     switch (event.type) {
       case "ended":
@@ -703,7 +712,10 @@ export class LiveConversation {
       case "delta":
         return this.applyTurnEvent(event, { stand }, (log) => ({ type: "text", segments: replySoFar(log) }));
       case "done":
-        return this.applyTurnEvent(event, { stand }, () => ({ type: "recorded", segments: event.message.segments }));
+        return this.applyTurnEvent(event as Extract<TurnEvent, { type: "done" }>, { stand }, () => ({
+          type: "recorded",
+          segments: event.message.segments,
+        }));
       case "photo":
         if (event.status === "pending") {
           const { reply: _, ...photo } = event;

@@ -336,13 +336,24 @@ describe("getCallSetup", () => {
     );
     vi.stubGlobal("fetch", fetch);
 
-    await getCallSetup("c1", ["llm", "tts", "stt"]);
-    await getCallSetup("c1", []);
+    await getCallSetup({ kind: "conversation", conversationId: "c1" }, ["llm", "tts", "stt"]);
+    await getCallSetup({ kind: "conversation", conversationId: "c1" }, []);
 
     expect(fetch.mock.calls.map(([path]) => path)).toEqual([
-      "/api/ice-servers?conversation=c1&own=llm,tts,stt",
-      "/api/ice-servers?conversation=c1",
+      "/api/ice-servers?conversation_id=c1&own=llm,tts,stt",
+      "/api/ice-servers?conversation_id=c1",
     ]);
+  });
+
+  it("names a group without reusing the conversation query", async () => {
+    const fetch = vi.fn(async (_path: string, _init?: RequestInit) =>
+      Response.json({ iceServers: [], maxCallSeconds: null, callExempt: false }),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    await getCallSetup({ kind: "group", groupId: "g/1" }, ["tts"]);
+
+    expect(fetch).toHaveBeenCalledWith("/api/ice-servers?group_id=g%2F1&own=tts", expect.anything());
   });
 });
 

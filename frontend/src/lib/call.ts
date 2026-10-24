@@ -13,6 +13,7 @@ import {
   followRedirect,
   getCallSetup,
   json,
+  type CallTarget,
   type CallEvent,
 } from "@/lib/api";
 import type { CallPreferences } from "@/lib/callPreferences";
@@ -83,13 +84,13 @@ const HANG_UP_GRACE_MS = 150;
  * which is when the backend starts counting the call as connected. Fails with MicUnavailable,
  * an ApiError carrying the backend's reason, or an Error when it could not connect. */
 export async function startCall(
-  conversationId: string,
+  target: CallTarget,
   preferences: CallPreferences,
   handlers: CallHandlers,
   userId: string,
 ): Promise<Call> {
   const { ownKeys, services } = callOwnKeys(userId);
-  const { iceServers, maxCallSeconds, callExempt } = await getCallSetup(conversationId, services);
+  const { iceServers, maxCallSeconds, callExempt } = await getCallSetup(target, services);
   const microphone = await Microphone.open(preferences.micId);
   handlers.onMicOpen();
   let hungUp = false;
@@ -118,7 +119,7 @@ export async function startCall(
       },
     });
     const requestData: Record<string, unknown> = {
-      conversation_id: conversationId,
+      ...(target.kind === "conversation" ? { conversation_id: target.conversationId } : { group_id: target.groupId }),
       muted: preferences.muted,
       quality: preferences.quality,
     };

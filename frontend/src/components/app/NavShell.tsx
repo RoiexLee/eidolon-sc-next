@@ -6,15 +6,19 @@ import { useSyncExternalStore, type ReactNode } from "react";
 import { NavDock, NavRail } from "@/components/app/AppNav";
 import { CallBar } from "@/components/conversations/CallBar";
 import { LiveCallLayer } from "@/components/conversations/CallLayer";
+import { LiveGroupCallLayer } from "@/components/conversations/GroupCallLayer";
+import { GroupAvatar } from "@/components/conversations/GroupAvatar";
 import { useDirectory, useWide } from "@/components/conversations/ConversationDirectory";
 import { useFocusBack } from "@/components/conversations/useFocusBack";
 import { useStandOutfits } from "@/components/conversations/useStandOutfits";
 import type { Character } from "@/lib/api";
-import { NOT_OPEN, type LiveConversation } from "@/lib/liveConversation";
+import { groupTitle } from "@/lib/groupChat";
+import { LiveConversation, NOT_OPEN, type Snapshot } from "@/lib/liveConversation";
+import { LiveGroupConversation, type GroupCallSnapshot } from "@/lib/liveGroupConversation";
 import { showsShellCallBar } from "@/lib/navShell";
 import { herVars } from "@/theme/herVars";
 
-const notOpen = () => NOT_OPEN;
+const notOpen = () => NOT_OPEN as Snapshot | GroupCallSnapshot;
 const noSubscription = () => () => {};
 
 /**
@@ -30,27 +34,47 @@ const noSubscription = () => () => {};
  */
 export function NavShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { held, isHeldShown, call, characters } = useDirectory();
-  const snapshot = useSyncExternalStore(held?.subscribe ?? noSubscription, held?.snapshot ?? notOpen, notOpen);
-  const character = held && !isHeldShown ? characters?.find((c) => c.id === held.characterId) : undefined;
-  const layer = character ? snapshot.layer : null;
+  const { held, isHeldShown, heldCall, characters } = useDirectory();
+  const snapshot = useSyncExternalStore(held?.subscribe ?? noSubscription, held?.snapshot ?? notOpen, notOpen) as Snapshot | GroupCallSnapshot;
+  const single = held instanceof LiveConversation;
+  const group = held instanceof LiveGroupConversation;
+  const groupSnapshot = group ? snapshot as GroupCallSnapshot : null;
+  const character = single && !isHeldShown ? characters?.find((c) => c.id === held.characterId) : undefined;
+  const groupCharacter = group && !isHeldShown && groupSnapshot?.group
+    ? characters?.find((c) => c.id === (groupSnapshot.speakerId ?? groupSnapshot.group?.current_members[0]?.character_id))
+    : undefined;
+  const layer = !isHeldShown
+    ? single
+      ? character
+        ? snapshot.layer
+        : null
+      : group
+        ? snapshot.layer
+        : null
+    : null;
   // 外壳持有的通话层展开着，不论是这里画的还是她的对话页画的（手机上铺满整屏，同样盖住 dock）。
   const isLayerOpen = held !== null && snapshot.layer !== null && !snapshot.layer.collapsed;
   const isCovered = layer !== null && isLayerOpen;
-  const barShown = call !== null && layer?.collapsed === true && showsShellCallBar(pathname, call.characterId);
+  const target = heldCall?.kind === "group"
+    ? { kind: "group" as const, groupId: heldCall.groupId }
+    : heldCall?.kind === "conversation"
+      ? { kind: "conversation" as const, characterId: heldCall.characterId }
+      : null;
+  const barShown = heldCall !== null && layer?.collapsed === true && showsShellCallBar(pathname, target);
   const focus = useFocusBack({ layerOpen: isCovered, noteShown: barShown });
 
   return (
     <div className="flex h-dvh flex-col md:flex-row">
       <NavRail />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {barShown && character && held && (
-          <div style={herVars(character.color)} className="shrink-0">
+        {barShown && held && (
+          <div style={character || groupCharacter ? herVars((character ?? groupCharacter)!.color) : undefined} className="shrink-0">
             <CallBar
               ref={focus.note}
-              call={call.state}
-              name={character.name}
-              newPhoto={snapshot.newPhoto}
+              call={heldCall!.state}
+              name={character?.name ?? (groupSnapshot?.group ? groupTitle(groupSnapshot.group) : "群聊")}
+              avatar={group && groupSnapshot?.group ? <GroupAvatar group={groupSnapshot.group} characters={characters ?? []} size="bar" /> : undefined}
+              newPhoto={single ? (snapshot as Snapshot).newPhoto : false}
               onExpand={() => held.expand()}
             />
           </div>
@@ -59,7 +83,10 @@ export function NavShell({ children }: { children: ReactNode }) {
           <div inert={isCovered} className="h-full">
             {children}
           </div>
-          {character && held && <HeldLayer live={held} character={character} layerRef={focus.layer} />}
+          {single && character && held && <HeldLayer live={held} character={character} layerRef={focus.layer} />}
+          {group && !isHeldShown && held && characters && (
+            <GroupHeldLayer live={held} characters={characters} color={groupCharacter?.color ?? null} layerRef={focus.layer} />
+          )}
         </div>
       </div>
       <NavDock isInert={isLayerOpen} />
@@ -91,6 +118,25 @@ function HeldLayer({
         go={go}
         exemptingKeys={account?.exempting_keys ?? null}
       />
+    </div>
+  );
+}
+
+function GroupHeldLayer({
+  live,
+  characters,
+  color,
+  layerRef,
+}: {
+  live: LiveGroupConversation;
+  characters: readonly Character[];
+  color: string | null;
+  layerRef: ReturnType<typeof useFocusBack>["layer"];
+}) {
+  const isFullScreen = !useWide();
+  return (
+    <div style={color ? herVars(color) : undefined} className="contents">
+      <LiveGroupCallLayer live={live} characters={characters} layerRef={layerRef} isFullScreen={isFullScreen} />
     </div>
   );
 }

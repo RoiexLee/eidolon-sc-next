@@ -76,6 +76,13 @@ describe("外壳顶上的通话条", () => {
     expect(showsShellCallBar("/conversation/mano", "mano")).toBe(false);
   });
 
+  it("同一个群组页上不出现，其他群组页上出现", () => {
+    const target = { kind: "group", groupId: "g1" } as const;
+    expect(showsShellCallBar("/conversation/group/g1", target)).toBe(false);
+    expect(showsShellCallBar("/conversation/group/g2", target)).toBe(true);
+    expect(showsShellCallBar("/settings", target)).toBe(true);
+  });
+
   it("外壳外面不出现", () => {
     expect(showsShellCallBar("/admin", "mano")).toBe(false);
   });
@@ -104,6 +111,14 @@ describe("去某个网址时通话怎么样", () => {
 
   it("通话中打开另一位角色的对话，先问再挂断", () => {
     expect(departure("/conversation/hiori", "mano")).toBe("ask");
+  });
+
+  it("群组通话在外壳页保留，切到另一群组或角色先问", () => {
+    const target = { kind: "group", groupId: "g1" } as const;
+    expect(departure("/conversation/group/g1", target)).toBe("keep");
+    expect(departure("/settings", target)).toBe("keep");
+    expect(departure("/conversation/group/g2", target)).toBe("ask");
+    expect(departure("/conversation/mano", target)).toBe("ask");
   });
 
   it("通话中离开外壳，先问再挂断", () => {

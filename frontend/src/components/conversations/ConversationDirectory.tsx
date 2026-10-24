@@ -47,8 +47,10 @@ import { loadCallPreferences, saveCallPreferences } from "@/lib/callPreferences"
 import { CharacterVoice } from "@/lib/characterVoice";
 import { toFailure, type Failure } from "@/lib/failure";
 import { getGiftState, type GiftState } from "@/lib/gifts";
+import { groupTitle } from "@/lib/groupChat";
 import { keepListPreferences, listPreferences, NO_PREFERENCES, type ListPreferences } from "@/lib/listPreferences";
-import { isLive, LiveConversation, NOT_OPEN, type LiveCall } from "@/lib/liveConversation";
+import { isLive, LiveConversation, NOT_OPEN, type LiveCall, type Snapshot } from "@/lib/liveConversation";
+import { LiveGroupConversation, type GroupCallSnapshot } from "@/lib/liveGroupConversation";
 import { departure, isGiftsSubpageInView } from "@/lib/navShell";
 import { hasNewRewards, keepRewardsSeenUpTo, rewardsSeenUpTo, type Rewarded } from "@/lib/rewards";
 import { later } from "@/lib/seenOnDevice";
@@ -61,6 +63,11 @@ const LIST_POLL_MS = 60_000;
 
 /** 正在和谁通话，列表那一行和外壳顶上的通话条据此显示「正在呼叫…」「通话中 mm:ss」；从外壳持有的 LiveConversation 的快照算出。 */
 export type CallInList = { characterId: string; state: LiveCall } | null;
+export type HeldCallInShell =
+  | { kind: "conversation"; characterId: string; state: LiveCall }
+  | { kind: "group"; groupId: string; state: LiveCall }
+  | null;
+type HeldConversation = LiveConversation | LiveGroupConversation;
 
 /** 列表和对话共用的数据：有哪些角色、和每位最新一次对话的摘要。由导航外壳载入一次，设置页也拿得到。 */
 export type Directory = {
@@ -101,7 +108,9 @@ export type Directory = {
    * 外壳持有的那段对话的实时状态（ADR-0018「通话属于外壳」）：她的对话页开着时就是那一页的；
    * 离开她的对话页时通话还在进行，就留在外壳里，换页时不卸下，通话结束后才丢掉。没有时为 null。
    */
-  held: LiveConversation | null;
+  held: HeldConversation | null;
+  /** The shell call metadata, including group calls; `call` remains single-character list data. */
+  heldCall: HeldCallInShell;
   /** 她的对话页开着、正用着 `held`：通话层由那一页画；否则由外壳在当前页画。 */
   isHeldShown: boolean;
   /**
@@ -117,8 +126,9 @@ export type Directory = {
    * 发回合、打电话时带上浏览器里存的、他的自带密钥。
    */
   open: (characterId: string, userId: string) => LiveConversation;
+  openGroup: (groupId: string, userId: string) => LiveGroupConversation;
   /** 她的对话页卸下：通话还在进行（或者因故结束、结束卡还开着）就留在外壳里，否则就此结束。 */
-  close: (live: LiveConversation) => void;
+  close: (live: HeldConversation) => void;
   /**
    * 在本标签页去 `href`，按外壳的去处规则（lib/navShell）：外壳里换页直接去，通话留着；
    * 通话中打开另一位角色的对话或者离开外壳，先问会不会挂断，确认了先挂断再去。
@@ -153,7 +163,7 @@ export function opensNewTab(event: MouseEvent<HTMLAnchorElement>): boolean {
 const DirectoryContext = createContext<Directory | null>(null);
 
 /** 外壳还没持有对话时，列表看到的那份空快照。 */
-const notHeld = () => NOT_OPEN;
+const notHeld = () => NOT_OPEN as Snapshot | GroupCallSnapshot;
 const noSubscription = () => () => {};
 
 export function useDirectory(): Directory {
@@ -178,10 +188,10 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   const [rewards, setRewards] = useState<{ isOpen: boolean; at: string | null }>({ isOpen: false, at: null });
   const [rewardsSeenAt, setRewardsSeenAt] = useState<string | null>(null);
   // 外壳持有的那段对话：状态给渲染，ref 给回调在点击、卸下这一刻读。
-  const [held, setHeld] = useState<LiveConversation | null>(null);
-  const heldRef = useRef<LiveConversation | null>(null);
+  const [held, setHeld] = useState<HeldConversation | null>(null);
+  const heldRef = useRef<HeldConversation | null>(null);
   // 已经结束（dispose）的还留着画最后一刻（通话层收起、滑下去），下一次打开时换新的。
-  const ended = useRef(new WeakSet<LiveConversation>());
+  const ended = useRef(new WeakSet<HeldConversation>());
   const [isHeldShown, setHeldShown] = useState(false);
   const [isPastShown, setPastShown] = useState(false);
   // 给回调在拉回摘要这一刻读：她的当前对话在不在屏幕上。
@@ -200,9 +210,18 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   const [voice] = useState(() => new CharacterVoice());
   const tones = useCallTones();
   // 订阅外壳持有的那一份快照：列表那一行、隐藏时留下的角色、外壳顶上的通话条都从它算出来。
-  const snapshot = useSyncExternalStore(held?.subscribe ?? noSubscription, held?.snapshot ?? notHeld, notHeld);
+  const snapshot = useSyncExternalStore(
+    held?.subscribe ?? noSubscription,
+    held?.snapshot ?? notHeld,
+    notHeld,
+  ) as Snapshot | GroupCallSnapshot;
   const liveCall = held && isLive(snapshot.call) ? snapshot.call : null;
-  const call: CallInList = held && liveCall ? { characterId: held.characterId, state: liveCall } : null;
+  const call: CallInList = held instanceof LiveConversation && liveCall ? { characterId: held.characterId, state: liveCall } : null;
+  const heldCall: HeldCallInShell = held && liveCall
+    ? held instanceof LiveGroupConversation
+      ? { kind: "group", groupId: held.groupId, state: liveCall }
+      : { kind: "conversation", characterId: held.characterId, state: liveCall }
+    : null;
   const giftsInView = isGiftsSubpageInView(pathname, held !== null && snapshot.layer?.collapsed === false);
 
   /** 拉回来的摘要，第 `since` 次看过之后又在本地看过的那几位记成看过。 */
@@ -241,9 +260,9 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
         const next = received(all, since);
         setLatest(next);
         const live = heldRef.current;
-        const hers = live && next[live.characterId];
+        const hers = live instanceof LiveConversation ? next[live.characterId] : null;
         const { held: shown, past } = onScreenRef.current;
-        if (live && hers && shown && !past && !ended.current.has(live)) live.listed(hers);
+        if (live instanceof LiveConversation && hers && shown && !past && !ended.current.has(live)) live.listed(hers);
       },
       () => {}, // 摘要只是预览，拉不到时留着上一次的
     );
@@ -344,7 +363,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   );
 
   /** 结束这一份：挂断通话（还在拨号的也算），停下她的声音；留着它画最后一刻。 */
-  const end = useCallback((live: LiveConversation) => {
+  const end = useCallback((live: HeldConversation) => {
     if (ended.current.has(live)) return;
     ended.current.add(live);
     live.dispose();
@@ -354,7 +373,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
     (characterId: string, userId: string) => {
       const current = heldRef.current;
       showHeld(true);
-      if (current && current.characterId === characterId && !ended.current.has(current)) {
+      if (current instanceof LiveConversation && current.characterId === characterId && !ended.current.has(current)) {
         // 外壳里那一份可能落后了（例如离开期间她搭了话）：马上拉一次摘要，有新的就重读。
         refresh();
         return current;
@@ -371,7 +390,8 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
           }),
         onListChanged: refresh,
         onRewarded: rewarded,
-        startCall: (conversationId, preferences, handlers) => startCall(conversationId, preferences, handlers, userId),
+        startCall: (conversationId, preferences, handlers) =>
+          startCall({ kind: "conversation", conversationId }, preferences, handlers, userId),
         sendTurn: (conversationId, text) => sendTurn(conversationId, text, userId),
         getPhoto,
         getAffinity,
@@ -386,8 +406,28 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
     [end, refresh, rewarded, seen, showHeld, voice, tones],
   );
 
+  const openGroup = useCallback(
+    (groupId: string, userId: string) => {
+      const current = heldRef.current;
+      showHeld(true);
+      if (current instanceof LiveGroupConversation && current.groupId === groupId && !ended.current.has(current)) return current;
+      if (current) end(current);
+      const live = new LiveGroupConversation(groupId, {
+        startCall: (target, preferences, handlers) => startCall(target, preferences, handlers, userId),
+        preferences: { load: loadCallPreferences, save: saveCallPreferences },
+        voice,
+        tones,
+        onMessagesChanged: refresh,
+      });
+      heldRef.current = live;
+      setHeld(live);
+      return live;
+    },
+    [end, refresh, showHeld, tones, voice],
+  );
+
   const close = useCallback(
-    (live: LiveConversation) => {
+    (live: HeldConversation) => {
       if (heldRef.current !== live) return;
       showHeld(false);
       const { call } = live.snapshot();
@@ -419,8 +459,12 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   const asks = useCallback(
     (href: string, leave: () => void): boolean => {
       const live = heldRef.current;
-      const callee = live && isLive(live.snapshot().call) ? live.characterId : null;
-      if (departure(href, callee) !== "ask") return false;
+      const target = live && isLive(live.snapshot().call)
+        ? live instanceof LiveGroupConversation
+          ? { kind: "group" as const, groupId: live.groupId }
+          : { kind: "conversation" as const, characterId: live.characterId }
+        : null;
+      if (departure(href, target) !== "ask") return false;
       // 挂断都算用户自己挂断（GLOSSARY.md「通话」）。
       setLeaving(() => () => {
         void hangUp();
@@ -450,6 +494,8 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   );
 
   const callee = characters?.find((c) => c.id === call?.characterId);
+  const heldGroup = held instanceof LiveGroupConversation ? held.snapshot().group : null;
+  const heldName = heldGroup ? groupTitle(heldGroup) : held instanceof LiveGroupConversation ? "群聊" : callee?.name ?? "";
   return (
     <DirectoryContext.Provider
       value={{
@@ -469,11 +515,13 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
         rewardedAt: rewards.at,
         giftsRead,
         call,
+        heldCall,
         held,
         isHeldShown,
-        onScreen: held && isHeldShown && !isPastShown ? held.characterId : null,
+        onScreen: held instanceof LiveConversation && isHeldShown && !isPastShown ? held.characterId : null,
         showPast,
         open,
+        openGroup,
         close,
         go,
         guard,
@@ -493,7 +541,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
       <AlertDialog open={leaving !== null} onOpenChange={(open) => !open && setLeaving(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{copy.call.leaveTitle(callee?.name ?? "")}</AlertDialogTitle>
+            <AlertDialogTitle>{copy.call.leaveTitle(heldName)}</AlertDialogTitle>
             <AlertDialogDescription>{copy.call.leaveDescription}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

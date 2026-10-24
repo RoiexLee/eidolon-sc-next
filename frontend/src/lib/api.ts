@@ -295,6 +295,7 @@ export type CallEvent =
   | Exclude<TurnEvent, { type: "user" | "photo" }>
   | CallUserEvent
   | CallPhotoEvent
+  | GroupCallEvent
   | SegmentPlaying
   | SegmentEmotion
   | Speaking
@@ -306,6 +307,15 @@ export type CallEvent =
       cooldown_until?: string | null;
       event?: ConversationEvent;
     };
+
+/** Events emitted by a group WebRTC turn. Group messages are deliberately kept separate from
+ * single-character `Message` records even though both use the `done` event name. */
+export type GroupCallEvent =
+  | { type: "speaker-started"; speaker_id: string; speaker_name: string; reply?: number }
+  | { type: "speaker-ended"; speaker_id: string; reply?: number }
+  | { type: "partial"; message: GroupMessage; messages?: GroupMessage[]; error: string; reply?: number }
+  | { type: "done"; turn_id: string; message: GroupMessage; messages: GroupMessage[]; partial: boolean; reply?: number }
+  | { type: "delta"; segment: number; lang: "ja" | "zh"; text: string; reply?: number };
 
 /** A call's turn opens with `user` as any turn does, saying too which of her replies in the call
  * it opens, numbered from 1 (a turn replied to afresh opens again, with the next number). */
@@ -859,11 +869,20 @@ export async function getLimitExemption(own: readonly OwnService[]): Promise<Lim
  * alone). Fails with the reason when calls are unavailable. */
 export type CallSetup = { iceServers: RTCIceServer[]; maxCallSeconds: number | null; callExempt: boolean };
 
+/** The resource a WebRTC call belongs to. Keep character conversations and groups explicit so
+ * an id can never accidentally be sent to the wrong backend route. */
+export type CallTarget =
+  | { kind: "conversation"; conversationId: string }
+  | { kind: "group"; groupId: string };
+
 /** Asked before a call into `conversationId` that is to bring the user's own keys for `own`,
  * naming those services but bringing none of the keys: the call itself brings them. Refused, as
  * the call would be, while she is in a cooldown. */
-export async function getCallSetup(conversationId: string, own: readonly OwnService[]): Promise<CallSetup> {
-  const path = `/api/ice-servers?conversation=${encodeURIComponent(conversationId)}`;
+export async function getCallSetup(target: CallTarget, own: readonly OwnService[]): Promise<CallSetup> {
+  const query = target.kind === "conversation"
+    ? `conversation_id=${encodeURIComponent(target.conversationId)}`
+    : `group_id=${encodeURIComponent(target.groupId)}`;
+  const path = `/api/ice-servers?${query}`;
   return json(await api(own.length ? `${path}&own=${own.join(",")}` : path));
 }
 

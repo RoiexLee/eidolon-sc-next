@@ -1,9 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { MarkedAvatar } from "@/components/app/MarkedAvatar";
 import { Button } from "@/components/ui/button";
+import { CallBar } from "@/components/conversations/CallBar";
+import { LiveGroupCallLayer } from "@/components/conversations/GroupCallLayer";
+import { GroupAvatar } from "@/components/conversations/GroupAvatar";
+import { useDirectory, useWide } from "@/components/conversations/ConversationDirectory";
+import { useFocusBack } from "@/components/conversations/useFocusBack";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
@@ -19,9 +24,16 @@ import {
 } from "@/lib/api";
 import { groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET } from "@/lib/groupChat";
 import { BackIcon, MentionIcon, ReplyIcon, SendIcon } from "@/theme/icons";
+import { PhoneIcon } from "@/theme/icons";
 import { Ja } from "@/theme/Ja";
+import { cn } from "@/lib/utils";
+import { herVars } from "@/theme/herVars";
+import { NOT_OPEN, type Snapshot } from "@/lib/liveConversation";
+import { LiveGroupConversation, type GroupCallSnapshot } from "@/lib/liveGroupConversation";
 
 const t = copy.groupConversation;
+const noSnapshot = () => NOT_OPEN as Snapshot | GroupCallSnapshot;
+const noSubscription = () => () => {};
 
 export function GroupConversationView({
   userId,
@@ -34,6 +46,12 @@ export function GroupConversationView({
   characters: Character[];
   onBack?: () => void;
 }) {
+  const { openGroup, close } = useDirectory();
+  const isFullScreen = !useWide();
+  const [live, setLive] = useState<LiveGroupConversation | null>(null);
+  const snapshot = useSyncExternalStore(live?.subscribe ?? noSubscription, live?.snapshot ?? noSnapshot, noSnapshot) as Snapshot | GroupCallSnapshot;
+  const groupSnapshot = live ? snapshot as GroupCallSnapshot : null;
+  const focus = useFocusBack({ layerOpen: groupSnapshot?.layer !== null && groupSnapshot?.layer?.collapsed === false, noteShown: Boolean(groupSnapshot && groupSnapshot.call.phase !== "idle" && groupSnapshot.layer?.collapsed) });
   const [group, setGroup] = useState<GroupConversation | null>(null);
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
@@ -45,6 +63,12 @@ export function GroupConversationView({
   const [speaker, setSpeaker] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState({ ja: "", zh: "" });
   const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    const current = openGroup(groupId, userId);
+    setLive(current);
+    return () => close(current);
+  }, [close, groupId, openGroup, userId]);
 
   useEffect(() => {
     let active = true;
@@ -64,6 +88,21 @@ export function GroupConversationView({
       active = false;
     };
   }, [groupId]);
+
+  useEffect(() => {
+    if (groupSnapshot && groupSnapshot.messages.length > messages.length) setMessages(groupSnapshot.messages);
+  }, [groupSnapshot, messages.length]);
+
+  // A call's done event carries character messages; reload once so the user's call utterance and
+  // the server's authoritative ids are visible in the same group history.
+  useEffect(() => {
+    if (!groupSnapshot || groupSnapshot.messages.length <= messages.length) return;
+    let active = true;
+    void listGroupMessages(groupId).then((next) => active && setMessages(next)).catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [groupId, groupSnapshot?.messages.length, messages.length]);
 
   const currentMembers = group?.current_members ?? [];
   const characterById = useMemo(() => new Map(characters.map((character) => [character.id, character])), [characters]);
@@ -161,16 +200,35 @@ export function GroupConversationView({
     return <div className="flex h-full items-center justify-center"><Spinner className="size-6" aria-label={t.loading} /></div>;
   }
 
+  const inCall = groupSnapshot ? groupSnapshot.call.phase === "dialing" || groupSnapshot.call.phase === "connected" : false;
+  const barShown = inCall && groupSnapshot?.layer?.collapsed === true;
+  const isLayerOpen = Boolean(groupSnapshot?.layer && !groupSnapshot.layer.collapsed);
+  const groupColor = currentMembers.map((member) => characterById.get(member.character_id)?.color).find(Boolean);
+  const callColor = groupSnapshot?.speakerId
+    ? characterById.get(groupSnapshot.speakerId)?.color ?? groupColor
+    : groupColor;
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
+    <div style={callColor ? herVars(callColor) : undefined} className="relative flex h-full min-h-0 flex-col bg-background text-foreground">
+      <div inert={isLayerOpen} className="contents">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b px-2">
         {onBack && <Button variant="ghost" size="icon-lg" aria-label={t.back} onClick={onBack}><BackIcon className="size-6" /></Button>}
-        <GroupHeaderAvatar group={group} />
+        <GroupHeaderAvatar group={group} characters={characters} />
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-header">{groupTitle(group)}</h1>
           <p className="truncate text-meta text-muted-foreground">{t.memberCount(String(currentMembers.length))}</p>
         </div>
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          aria-label={inCall ? copy.call.expand : `呼叫${groupTitle(group)}`}
+          onClick={() => (inCall ? live?.expand() : void live?.startCall())}
+          disabled={!live || !groupSnapshot?.group || Boolean(groupSnapshot.failure && !groupSnapshot.group)}
+        >
+          <PhoneIcon className={cn("size-5 text-her-mark", inCall && "fill-current")} />
+        </Button>
       </header>
+
+      {barShown && live && <CallBar ref={focus.note} call={groupSnapshot!.call as Extract<GroupCallSnapshot["call"], { phase: "dialing" | "connected" }>} name={groupTitle(group)} avatar={<GroupAvatar group={group} characters={characters} size="bar" />} onExpand={() => live.expand()} />}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
         {messages.length === 0 && pendingText === null ? (
@@ -254,6 +312,8 @@ export function GroupConversationView({
         {failure && <p role="alert" className="text-meta text-destructive">{failure}</p>}
         {partialNotice && <p role="status" className="text-meta text-muted-foreground">{partialNotice}</p>}
       </form>
+      </div>
+      {live && <div className="contents"><LiveGroupCallLayer live={live} characters={characters} layerRef={focus.layer} isFullScreen={isFullScreen} /></div>}
     </div>
   );
 }
@@ -316,6 +376,6 @@ function StreamingCharacterBubble({
   );
 }
 
-function GroupHeaderAvatar({ group }: { group: GroupConversation }) {
-  return <MarkedAvatar name={groupTitle(group)} size="lg" />;
+function GroupHeaderAvatar({ group, characters }: { group: GroupConversation; characters: readonly Character[] }) {
+  return <GroupAvatar group={group} characters={characters} />;
 }

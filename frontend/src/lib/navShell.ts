@@ -14,6 +14,10 @@ import { PLAY_ROOT, playSubpage } from "@/lib/playRoute";
  * - `go`: no call under way; nothing to ask. */
 export type Departure = "keep" | "ask" | "go";
 
+export type CallTargetRef =
+  | { kind: "conversation"; characterId: string }
+  | { kind: "group"; groupId: string };
+
 /** The path of a URL, and whether it is on this site: the app links within itself by path, so
  * a URL with a host of its own is taken to be another site. */
 function pathOf(href: string): { path: string; local: boolean } {
@@ -25,6 +29,15 @@ function pathOf(href: string): { path: string; local: boolean } {
 function conversationOf(path: string): string | null {
   const match = /^\/conversation\/([^/]+)\/?$/.exec(path);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function groupOf(path: string): string | null {
+  const match = /^\/conversation\/group\/([^/]+)\/?$/.exec(path);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function targetOf(target: CallTargetRef | string | null): CallTargetRef | null {
+  return typeof target === "string" ? { kind: "conversation", characterId: target } : target;
 }
 
 /** Group conversation pages are in the navigation shell but never own a character call layer. */
@@ -56,19 +69,29 @@ export function isInShell(href: string): boolean {
 /** The call bar across the top of the shell: while a call is under way, on a page in the shell
  * other than her own conversation page, which has its own bar under its header. Whether the
  * call layer is folded away is the caller's to add. */
-export function showsShellCallBar(href: string, callee: string | null): boolean {
+export function showsShellCallBar(href: string, target: CallTargetRef | string | null): boolean {
+  const callee = targetOf(target);
   if (callee === null || !isInShell(href)) return false;
-  return conversationOf(pathOf(href).path) !== callee;
+  const path = pathOf(href).path;
+  return callee.kind === "group" ? groupOf(path) !== callee.groupId : conversationOf(path) !== callee.characterId;
 }
 
 /** What going to `href` in this tab does to the call with `callee` (null for no call): one
  * character at a time, so another character's conversation asks, as does leaving the shell.
  * Links that open in a new tab never come here. */
-export function departure(href: string, callee: string | null): Departure {
+export function departure(href: string, target: CallTargetRef | string | null): Departure {
+  const legacyCharacter = typeof target === "string";
+  const callee = targetOf(target);
   if (callee === null) return "go";
   if (!isInShell(href)) return "ask";
-  const other = conversationOf(pathOf(href).path);
-  return other !== null && other !== callee ? "ask" : "keep";
+  const path = pathOf(href).path;
+  if (legacyCharacter && groupOf(path) !== null) return "keep";
+  const same = callee.kind === "group" ? groupOf(path) === callee.groupId : conversationOf(path) === callee.characterId;
+  if (same) return "keep";
+  // A live call may remain while moving between shell pages, but switching to any other
+  // conversation (including a group/character mismatch) needs the existing confirmation.
+  const isConversation = conversationOf(path) !== null || groupOf(path) !== null;
+  return isConversation ? "ask" : "keep";
 }
 
 /** The items of the rail and the dock, top to bottom (left to right on the dock). */

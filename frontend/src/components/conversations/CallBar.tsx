@@ -1,6 +1,6 @@
 "use client";
 
-import type { Ref } from "react";
+import type { ReactNode, Ref } from "react";
 
 import { copy } from "@/i18n";
 import { showTime } from "@/lib/callTime";
@@ -21,6 +21,7 @@ import { useCallTime } from "./useCallTime";
 export function CallBar({
   call,
   name,
+  avatar,
   newPhoto = false,
   onExpand,
   ref,
@@ -28,6 +29,8 @@ export function CallBar({
   call: LiveCall;
   /** 在和谁通话：不在她的对话页上时写在状态前面。 */
   name?: string;
+  /** Optional compact identity mark for a group target. */
+  avatar?: ReactNode;
   /** 收起时到了她的照片，还没看。 */
   newPhoto?: boolean;
   onExpand: () => void;
@@ -41,6 +44,7 @@ export function CallBar({
       onClick={onExpand}
       className="flex h-call-bar w-full shrink-0 items-center gap-2 bg-her-call-deep px-4 text-left text-white outline-none focus-visible:ring-3 focus-visible:ring-white/60 focus-visible:ring-inset"
     >
+      {avatar}
       <span
         aria-hidden
         className={cn("size-2 shrink-0 rounded-full bg-white", !time && "motion-safe:animate-pulse")}

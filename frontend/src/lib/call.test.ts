@@ -74,7 +74,7 @@ describe("startCall", () => {
     keepOwnKey("u1", "tts", TTS);
     keepOwnKey("u1", "stt", STT);
 
-    await startCall("c1", PREFERENCES, HANDLERS, "u1");
+    await startCall({ kind: "conversation", conversationId: "c1" }, PREFERENCES, HANDLERS, "u1");
 
     expect(offers).toHaveLength(1);
     const [{ requestData, sentWithOffer }] = offers;
@@ -82,5 +82,14 @@ describe("startCall", () => {
     // 之后每次重新协商发的都是这同一份请求数据。
     expect(requestData).not.toHaveProperty("own_keys");
     expect(requestData).toMatchObject({ conversation_id: "c1" });
+  });
+
+  it("sends a group target without a conversation id", async () => {
+    await startCall({ kind: "group", groupId: "g1" }, PREFERENCES, HANDLERS, "u1");
+
+    const [{ requestData, sentWithOffer }] = offers;
+    expect(sentWithOffer).toMatchObject({ group_id: "g1", muted: false, quality: "standard" });
+    expect(sentWithOffer).not.toHaveProperty("conversation_id");
+    expect(requestData).not.toHaveProperty("own_keys");
   });
 });
