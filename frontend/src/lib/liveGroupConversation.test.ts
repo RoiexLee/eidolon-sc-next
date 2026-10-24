@@ -111,6 +111,20 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe("LiveGroupConversation", () => {
+  it("uses an updated member snapshot for later call speakers", async () => {
+    const fixture = eventHandlers();
+    await flush();
+    const member = { character_id: "c", position: 2, added_at: "2026-10-24T00:00:00Z", removed_at: null, name_snapshot: "丙", current: true, name: "丙" };
+    fixture.live.setGroup({ ...group, members: [...group.members, member], current_members: [...group.current_members, member] });
+    expect(fixture.live.snapshot().group?.current_members.map(({ character_id }) => character_id)).toEqual(["a", "b", "c"]);
+
+    await fixture.live.startCall();
+    const handler = fixture.handlers;
+    if (!handler) throw new Error("call handlers were not installed");
+    handler.onEvent({ type: "speaker-started", speaker_id: "c", speaker_name: "丙" });
+    expect(fixture.live.snapshot().speakerId).toBe("c");
+  });
+
   it("switches visual speaker state and keeps all done messages out of single-chat state", async () => {
     const fixture = eventHandlers();
     const { live } = fixture;

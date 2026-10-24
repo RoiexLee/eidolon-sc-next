@@ -3,6 +3,22 @@ import type { GroupConversation, GroupMember, GroupMessage } from "@/lib/api";
 /** Select values cannot be empty; this value maps to an empty mentions request. */
 export const ROUND_ROBIN_TARGET = "__round_robin__";
 
+export function groupMemberPatch(currentIds: readonly string[], selectedIds: readonly string[]): {
+  add_character_ids: string[];
+  remove_character_ids: string[];
+} {
+  const current = new Set(currentIds);
+  const selected = new Set(selectedIds);
+  return {
+    add_character_ids: selectedIds.filter((id) => !current.has(id)),
+    remove_character_ids: currentIds.filter((id) => !selected.has(id)),
+  };
+}
+
+export function validGroupMemberCount(count: number): boolean {
+  return count >= 2 && count <= 5;
+}
+
 export function currentGroupMembers(group: GroupConversation): GroupMember[] {
   return group.members.filter((member) => member.current).sort((a, b) => a.position - b.position);
 }

@@ -14,6 +14,7 @@ import {
   redirectFor,
   sendTurn,
   sendGroupTurn,
+  updateGroup,
   type TurnEvent,
 } from "@/lib/api";
 import { keepOwnKey, localOwnKeys } from "@/lib/localOwnKeys";
@@ -274,6 +275,23 @@ describe("sendGroupTurn", () => {
       { type: "partial", message: {}, error: "追加失败" },
       { type: "done", turn_id: "t1", message: {}, messages: [{}, {}], partial: true },
     ]);
+  });
+});
+
+describe("updateGroup", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("patches encoded group members and returns the server snapshot", async () => {
+    const group = { id: "g/1", current_members: [{ character_id: "a" }] };
+    const fetch = vi.fn(async (_path: string, _init: RequestInit) => Response.json(group));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(updateGroup("g/1?two", { add_character_ids: ["b"], remove_character_ids: ["c"] })).resolves.toEqual(group);
+
+    const [path, init] = fetch.mock.calls[0];
+    expect(path).toBe("/api/groups/g%2F1%3Ftwo");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ add_character_ids: ["b"], remove_character_ids: ["c"] });
   });
 });
 

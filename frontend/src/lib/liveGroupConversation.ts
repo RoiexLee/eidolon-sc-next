@@ -202,6 +202,9 @@ export class LiveGroupConversation {
   /** Group history has no single-character stale summary; retained for the Directory seam. */
   offScreen(): void {}
 
+  /** Keeps an already-open group page's call snapshot in step with member changes. */
+  setGroup(group: GroupConversation): void { this.update({ group }); }
+
   collapse(): void {
     if (isLive(this.state.call) && this.state.layer && !this.state.layer.collapsed)
       this.update({ layer: { ...this.state.layer, collapsed: true }, typing: false });

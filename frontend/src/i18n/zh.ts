@@ -194,6 +194,13 @@ export const zh = {
     failed: "这次回复没能完成，请重试。",
     partial: "主回复已完成，另一位角色暂时没有回复。",
     memberCount: (count: string) => `${count} 位成员`,
+    members: "成员",
+    memberManageTitle: "管理群组成员",
+    memberManageDescription: "选择 2 至 5 位角色。",
+    memberManageSubmit: "保存成员",
+    memberManageTooFew: "至少保留 2 位成员",
+    memberManageTooMany: "最多保留 5 位成员",
+    memberManageFailed: "群组成员没能更新",
   },
   conversation: {
     back: "返回对话列表",

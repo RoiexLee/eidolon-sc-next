@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { CallBar } from "@/components/conversations/CallBar";
 import { LiveGroupCallLayer } from "@/components/conversations/GroupCallLayer";
 import { GroupAvatar } from "@/components/conversations/GroupAvatar";
+import { GroupMemberDialog } from "@/components/conversations/GroupMemberDialog";
 import { useDirectory, useWide } from "@/components/conversations/ConversationDirectory";
 import { useFocusBack } from "@/components/conversations/useFocusBack";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
@@ -63,6 +64,7 @@ export function GroupConversationView({
   const [speaker, setSpeaker] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState({ ja: "", zh: "" });
   const [sending, setSending] = useState(false);
+  const [memberDialogOpen, setMemberDialogOpen] = useState(false);
 
   useEffect(() => {
     const current = openGroup(groupId, userId);
@@ -201,6 +203,7 @@ export function GroupConversationView({
   }
 
   const inCall = groupSnapshot ? groupSnapshot.call.phase === "dialing" || groupSnapshot.call.phase === "connected" : false;
+  const memberChangesLocked = inCall || sending;
   const barShown = inCall && groupSnapshot?.layer?.collapsed === true;
   const isLayerOpen = Boolean(groupSnapshot?.layer && !groupSnapshot.layer.collapsed);
   const groupColor = currentMembers.map((member) => characterById.get(member.character_id)?.color).find(Boolean);
@@ -217,6 +220,14 @@ export function GroupConversationView({
           <h1 className="truncate text-header">{groupTitle(group)}</h1>
           <p className="truncate text-meta text-muted-foreground">{t.memberCount(String(currentMembers.length))}</p>
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setMemberDialogOpen(true)}
+          disabled={memberChangesLocked}
+        >
+          {t.members}
+        </Button>
         <Button
           variant="ghost"
           size="icon-lg"
@@ -313,6 +324,31 @@ export function GroupConversationView({
         {partialNotice && <p role="status" className="text-meta text-muted-foreground">{partialNotice}</p>}
       </form>
       </div>
+      <GroupMemberDialog
+        open={memberDialogOpen}
+        group={group}
+        characters={characters}
+        locked={memberChangesLocked}
+        onOpenChange={setMemberDialogOpen}
+        onSaved={(nextGroup) => {
+          live?.setGroup(nextGroup);
+          setGroup(nextGroup);
+          setTargetId((current) =>
+            current === ROUND_ROBIN_TARGET ||
+            (current && nextGroup.current_members.some((member) => member.character_id === current))
+              ? current
+              : nextGroup.current_members[0]?.character_id ?? null,
+          );
+          setReplyId((current) => {
+            if (current === null) return null;
+            const quotedMessage = messages.find((message) => message.id === current);
+            return quotedMessage?.author_character_id &&
+              nextGroup.current_members.some((member) => member.character_id === quotedMessage.author_character_id)
+              ? current
+              : null;
+          });
+        }}
+      />
       {live && <div className="contents"><LiveGroupCallLayer live={live} characters={characters} layerRef={focus.layer} isFullScreen={isFullScreen} /></div>}
     </div>
   );

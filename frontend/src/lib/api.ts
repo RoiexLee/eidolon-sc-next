@@ -793,6 +793,21 @@ export async function getGroup(groupId: string): Promise<GroupConversation> {
   return json(await api(`/api/groups/${encodeURIComponent(groupId)}`));
 }
 
+export type GroupPatchInput = {
+  add_character_ids: readonly string[];
+  remove_character_ids: readonly string[];
+};
+
+export async function updateGroup(groupId: string, input: GroupPatchInput): Promise<GroupConversation> {
+  return json(
+    await api(`/api/groups/${encodeURIComponent(groupId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
 export async function listGroupMessages(groupId: string): Promise<GroupMessage[]> {
   return json(await api(`/api/groups/${encodeURIComponent(groupId)}/messages`));
 }
