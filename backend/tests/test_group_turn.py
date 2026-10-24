@@ -36,6 +36,75 @@ async def test_group_turn_targets_member_and_records_authors(make_client: Client
     assert llm.prompts[-1][1].role == "system"
 
 
+async def test_group_turn_mentions_all_current_members_in_position_order(make_client: ClientFactory) -> None:
+    llm = FakeLLM(
+        ["<ja>真乃</ja><zh>真乃</zh>"],
+        ["<ja>恋钟</ja><zh>恋钟</zh>"],
+    )
+    client = make_client(llm)
+    group = (await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})).json()
+    response = await client.post(
+        f"/api/groups/{group['id']}/turns",
+        json={"text": "大家好", "mention_all": True, "client_idempotency_key": "all"},
+    )
+    assert response.status_code == 200, response.text
+    payload = events(response)
+    assert [event["author_character_id"] for event in payload if event["type"] == "speaker"] == ["mano", "kogane"]
+    done = payload[-1]
+    assert done["type"] == "done" and done["partial"] is False
+    assert [message["author_character_id"] for message in done["messages"]] == ["mano", "kogane"]
+    messages = (await client.get(f"/api/groups/{group['id']}/messages")).json()
+    assert [message["author_kind"] for message in messages] == ["user", "character", "character"]
+    assert messages[1]["mentions"] == ["mano", "kogane"]
+    replay = await client.post(
+        f"/api/groups/{group['id']}/turns",
+        json={"text": "大家好", "mention_all": True, "client_idempotency_key": "all"},
+    )
+    assert replay.status_code == 200
+    assert len(events(replay)[-1]["messages"]) == 2
+    assert len((await client.get(f"/api/groups/{group['id']}/messages")).json()) == 3
+    assert len(llm.prompts) == 2
+
+
+async def test_group_turn_mentions_all_rejects_single_member_target(make_client: ClientFactory) -> None:
+    client = make_client(FakeLLM())
+    group = (await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})).json()
+    response = await client.post(
+        f"/api/groups/{group['id']}/turns",
+        json={"text": "x", "mention_all": True, "mention_character_ids": ["mano"]},
+    )
+    assert response.status_code == 422
+
+
+async def test_group_turn_mentions_all_rejects_a_quote(make_client: ClientFactory) -> None:
+    llm = FakeLLM(["<ja>一</ja><zh>一</zh>"], ["<ja>追加</ja><zh>追加</zh>"])
+    client = make_client(llm)
+    group = (await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})).json()
+    first = await client.post(f"/api/groups/{group['id']}/turns", json={"text": "一", "mention_character_ids": ["mano"]})
+    message_id = next(event for event in events(first) if event["type"] == "done")["message"]["id"]
+    response = await client.post(
+        f"/api/groups/{group['id']}/turns",
+        json={"text": "x", "mention_all": True, "reply_to_message_id": message_id},
+    )
+    assert response.status_code == 422
+
+
+async def test_group_turn_mentions_all_keeps_completed_replies_when_one_fails(make_client: ClientFactory) -> None:
+    llm = FakeLLM(["<ja>真乃</ja><zh>真乃</zh>"], LLMError("恋钟失败"))
+    client = make_client(llm)
+    group = (await client.post("/api/groups", json={"character_ids": ["mano", "kogane"]})).json()
+    response = await client.post(
+        f"/api/groups/{group['id']}/turns",
+        json={"text": "各位好", "mention_all": True},
+    )
+    payload = events(response)
+    assert next(event for event in payload if event["type"] == "partial")["message"]["author_character_id"] == "mano"
+    assert payload[-1]["type"] == "done" and payload[-1]["partial"] is True
+    assert [message["author_kind"] for message in (await client.get(f"/api/groups/{group['id']}/messages")).json()] == [
+        "user", "character",
+    ]
+
+
 async def test_group_turn_without_target_round_robins_current_members(make_client: ClientFactory) -> None:
     llm = FakeLLM(
         ["<ja>一</ja><zh>一</zh>"], ["<ja>追加一</ja><zh>追加一</zh>"],

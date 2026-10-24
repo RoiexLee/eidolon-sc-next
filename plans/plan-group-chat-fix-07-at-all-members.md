@@ -1,6 +1,6 @@
 # 群组对话修复 07：支持 `@ 全体成员`
 
-Status: draft
+Status: done
 
 ## 背景
 
@@ -48,3 +48,13 @@ Status: draft
 
 - 不支持用户之间共享群组、后台离线主动回复或无限接龙。
 - 不实现输入框内 mention 变色、富文本编辑器或删除 mention token 的局部编辑；这些仍由输入体验另行决定。
+
+## 实现结果
+
+前端候选列表增加 `@全体成员`，提交时使用独立的 `mention_all` 布尔字段。后端把当前成员快照按稳定位置顺序展开，复用同一个 `group_turn` 串行生成每位角色的回复；已完成的角色消息立即持久化，后续角色失败时保留前序消息、结束本次全体回合并发送 `partial` 与 `done.partial=true`。单成员、轮流、引用和群组通话仍沿用原有契约；全体与单成员或引用不能同时指定。
+
+输入框仍是原生 `Textarea`，不做 mention 变色或富文本迁移；候选项使用中性高亮，群头像和语音通话不在本票扩展。
+
+## 验证结果
+
+已通过 `backend/tests/test_group_turn.py`（16 tests）、相关前端 Vitest（48 tests）、backend 目标文件 pyright、frontend typecheck 和 discipline 检查。全量 pyright 仍有仓库既有的 21 个无关错误；未做本地构建版 Playwright 验收。

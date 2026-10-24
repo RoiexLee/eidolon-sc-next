@@ -322,10 +322,11 @@ class GroupStore:
         *,
         reply_to_message_id: int | None = None,
         mentions: Sequence[str] = (),
+        finalize: bool = True,
     ) -> GroupMessage:
         """Record one bounded follow-up after the primary message is persisted."""
         return await self._db.write(
-            _append_character_message, turn_id, target, reply, reply_to_message_id, tuple(mentions)
+            _append_character_message, turn_id, target, reply, reply_to_message_id, tuple(mentions), finalize
         )
 
     async def complete_turn(self, turn_id: str) -> None:
@@ -650,6 +651,7 @@ def _append_character_message(
     reply: list[Segment],
     reply_to_message_id: int | None,
     mentions: Sequence[str],
+    finalize: bool,
 ) -> GroupMessage:
     cursor = by_name(db)
     turn = cursor.execute(
@@ -675,11 +677,12 @@ def _append_character_message(
         "UPDATE group_conversations SET updated_at = ? WHERE id = ?",
         (now, turn["group_id"]),
     )
-    cursor.execute(
-        "UPDATE group_turns SET ended_at = ?, status = 'done' "
-        "WHERE id = ? AND status = 'running'",
-        (now, turn_id),
-    )
+    if finalize:
+        cursor.execute(
+            "UPDATE group_turns SET ended_at = ?, status = 'done' "
+            "WHERE id = ? AND status = 'running'",
+            (now, turn_id),
+        )
     return GroupMessage(
         message_cursor.lastrowid, turn["group_id"], turn_id, "character",
         target.character_id, target.name_snapshot, None, ja, zh, reply, now,

@@ -2,6 +2,7 @@ import type { GroupConversation, GroupMember, GroupMessage } from "@/lib/api";
 
 /** Select values cannot be empty; this value maps to an empty mentions request. */
 export const ROUND_ROBIN_TARGET = "__round_robin__";
+export const ALL_MEMBERS_TARGET = "__all_members__";
 
 export type GroupMentionMatch = { start: number; end: number; query: string };
 

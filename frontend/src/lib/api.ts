@@ -826,6 +826,7 @@ export async function createGroup(characterIds: readonly string[], title?: strin
 export type GroupTurnInput = {
   text: string;
   mention_character_ids?: readonly string[];
+  mention_all?: boolean;
   reply_to_message_id?: number | null;
   client_idempotency_key?: string;
 };

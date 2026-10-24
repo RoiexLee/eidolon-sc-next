@@ -58,6 +58,7 @@ class GroupTurnInput(BaseModel):
     text: str
     reply_to_message_id: int | None = None
     mention_character_ids: list[str] = Field(default_factory=list, max_length=1)
+    mention_all: bool = False
     client_idempotency_key: str | None = Field(None, max_length=200)
     own_keys: OwnKeysInput | None = None
 
@@ -174,6 +175,8 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
         mentions = tuple(dict.fromkeys(body.mention_character_ids))
         if len(mentions) != len(body.mention_character_ids) or len(mentions) > 1:
             raise HTTPException(422, "一次只能指定一位群组成员")
+        if body.mention_all and mentions:
+            raise HTTPException(422, "不能同时指定全体成员和单个成员")
         reference = None
         if body.reply_to_message_id is not None:
             reference = await groups.message(user_id, group_id, body.reply_to_message_id)
@@ -181,22 +184,25 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
                 raise HTTPException(422, "引用消息不属于该群组")
             if reference.author_kind != "character" or reference.author_character_id is None:
                 raise HTTPException(422, "只能引用角色消息")
-        requested_target_id = mentions[0] if mentions else (
+        if body.mention_all and reference is not None:
+            raise HTTPException(422, "全体成员不能与引用同时使用")
+        requested_target_id = None if body.mention_all else (mentions[0] if mentions else (
             reference.author_character_id if reference is not None else None
-        )
+        ))
         if reference is not None and mentions and reference.author_character_id != mentions[0]:
             raise HTTPException(422, "引用消息和指定角色不一致")
         if requested_target_id is not None and requested_target_id not in characters:
             raise HTTPException(422, "目标角色不是当前群组成员")
         client_key = body.client_idempotency_key.strip() if body.client_idempotency_key else None
+        fingerprint_parts: list[object] = [text, requested_target_id, body.reply_to_message_id, list(mentions)]
+        if body.mention_all:
+            fingerprint_parts.append(True)
         fingerprint = hashlib.sha256(
-            json.dumps(
-                [text, requested_target_id, body.reply_to_message_id, list(mentions)],
-                ensure_ascii=False, separators=(",", ":"),
-            ).encode()
+            json.dumps(fingerprint_parts, ensure_ascii=False, separators=(",", ":")).encode()
         ).hexdigest()
         brought = body.own_keys.brought() if body.own_keys else BroughtKeys()
         target: GroupMember | None = None
+        targets: tuple[GroupMember, ...] | None = None
         async with lock_for(group_id):
             existing = (
                 await groups.turn_for_key(user_id, group_id, client_key)
@@ -216,7 +222,10 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
                 group = await group_or_404(group_id, user_id)
                 current_members = group.current_members
                 current = {member.character_id: member for member in current_members}
-                if requested_target_id is None:
+                if body.mention_all:
+                    targets = tuple(current_members)
+                    mentions = tuple(member.character_id for member in current_members)
+                elif requested_target_id is None:
                     target = round_robin_member(current_members, await groups.messages(user_id, group_id))
                 elif requested_target_id not in current:
                     raise HTTPException(422, "目标角色不是当前群组成员")
@@ -276,10 +285,11 @@ def add_group_routes(app: FastAPI, backend: Backend) -> None:
                         "partial": False,
                     })
                     return
-                assert target is not None
+                assert target is not None or targets is not None
                 async with aclosing(engine.turn(
                     group, target, turn, text, admission.llms,  # type: ignore[union-attr]
                     reply_to_message_id=body.reply_to_message_id, mentions=mentions,
+                    targets=targets,
                 )) as turn_events:
                     async for event in turn_events:
                         if isinstance(event, GroupUserSaid):

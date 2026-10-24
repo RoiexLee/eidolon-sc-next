@@ -23,7 +23,7 @@ import {
   type GroupMessage,
 } from "@/lib/api";
 import { matchesSearch } from "@/lib/characterSearch";
-import { groupMentionAt, groupTitle, messageAuthor, messagePreview, messageText, replyTarget } from "@/lib/groupChat";
+import { ALL_MEMBERS_TARGET, groupMentionAt, groupTitle, messageAuthor, messagePreview, messageText, replyTarget } from "@/lib/groupChat";
 import { BackIcon, GroupIcon, ReplyIcon, SendIcon } from "@/theme/icons";
 import { PhoneIcon } from "@/theme/icons";
 import { Ja } from "@/theme/Ja";
@@ -35,6 +35,7 @@ import { LiveGroupConversation, type GroupCallSnapshot } from "@/lib/liveGroupCo
 const t = copy.groupConversation;
 const noSnapshot = () => NOT_OPEN as Snapshot | GroupCallSnapshot;
 const noSubscription = () => () => {};
+type MentionCandidate = { kind: "all" | "member"; character_id: string; name: string };
 
 export function GroupConversationView({
   userId,
@@ -119,11 +120,13 @@ export function GroupConversationView({
   const mentionCandidates = useMemo(() => {
     if (!mentionRange) return [];
     const query = mentionRange.query.toLocaleLowerCase();
-    return currentMembers.filter((member) => {
+    const all = { kind: "all" as const, character_id: ALL_MEMBERS_TARGET, name: t.allMembers };
+    const members = currentMembers.filter((member) => {
       const character = characterById.get(member.character_id);
       return character ? matchesSearch(character, query) : member.name.toLocaleLowerCase().includes(query);
-    });
-  }, [currentMembers, mentionRange]);
+    }).map((member) => ({ kind: "member" as const, character_id: member.character_id, name: member.name }));
+    return [all, ...members].filter((candidate) => !query || candidate.name.toLocaleLowerCase().includes(query));
+  }, [characterById, currentMembers, mentionRange]);
 
   const updateDraft = (value: string, cursor: number) => {
     setDraft(value);
@@ -142,14 +145,14 @@ export function GroupConversationView({
     setMentionIndex(0);
   };
 
-  const chooseMention = (member: GroupConversation["current_members"][number]) => {
+  const chooseMention = (candidate: MentionCandidate) => {
     if (!mentionRange) return;
-    const replacement = `@${member.name} `;
+    const replacement = `@${candidate.name} `;
     const nextDraft = `${draft.slice(0, mentionRange.start)}${replacement}${draft.slice(mentionRange.end)}`;
     const nextCursor = mentionRange.start + replacement.length;
     setDraft(nextDraft);
-    setMentionTargetId(member.character_id);
-    setMentionToken({ characterId: member.character_id, name: member.name, start: mentionRange.start, end: mentionRange.start + replacement.trimEnd().length });
+    setMentionTargetId(candidate.character_id);
+    setMentionToken({ characterId: candidate.character_id, name: candidate.name, start: mentionRange.start, end: mentionRange.start + replacement.trimEnd().length });
     setMentionRange(null);
     setMentionIndex(0);
     requestAnimationFrame(() => {
@@ -161,7 +164,10 @@ export function GroupConversationView({
   const submit = async () => {
     const text = draft.trim();
     if (!text || !group || sending) return;
-    const requestedTargetId = mentionTargetId ?? quoted?.author_character_id ?? null;
+    const mentionAll = mentionTargetId === ALL_MEMBERS_TARGET;
+    const mentionId = mentionAll ? null : mentionTargetId;
+    const requestedTargetId = mentionId ?? quoted?.author_character_id ?? null;
+    const mentionIds = mentionAll ? currentMembers.map((member) => member.character_id) : requestedTargetId ? [requestedTargetId] : [];
     setSending(true);
     setFailure(null);
     setPartialNotice(null);
@@ -176,7 +182,8 @@ export function GroupConversationView({
         group.id,
         {
           text,
-          mention_character_ids: requestedTargetId ? [requestedTargetId] : [],
+          mention_character_ids: mentionAll ? [] : mentionIds,
+          mention_all: mentionAll,
           reply_to_message_id: replyId,
           client_idempotency_key: crypto.randomUUID(),
         },
@@ -212,7 +219,7 @@ export function GroupConversationView({
               segments: [],
               created_at: new Date().toISOString(),
               reply_to_message_id: replyId,
-              mentions: requestedTargetId ? [requestedTargetId] : [],
+              mentions: mentionIds,
             },
             ...roleMessages,
           ]);
@@ -352,19 +359,23 @@ export function GroupConversationView({
             <div className="relative">
               {mentionCandidates.length > 0 && (
                 <div id="group-mention-list" role="listbox" aria-label={t.chooseTarget} className="absolute right-0 bottom-full left-0 z-20 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1.5 text-popover-foreground shadow-md ring-1 ring-foreground/10 dark:ring-overlay-edge">
-                  {mentionCandidates.map((member, index) => (
+                  {mentionCandidates.map((candidate, index) => (
                     <button
-                      key={member.character_id}
+                      key={candidate.character_id}
                       type="button"
                       role="option"
-                      id={`group-mention-${member.character_id}`}
+                      id={`group-mention-${candidate.character_id}`}
                       aria-selected={index === mentionIndex}
                       className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none", index === mentionIndex ? "bg-muted" : "hover:bg-muted/60")}
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => chooseMention(member)}
+                      onClick={() => chooseMention(candidate)}
                     >
-                      <MarkedAvatar name={member.name} src={characterById.get(member.character_id)?.avatar_url} size="sm" />
-                      <span className="min-w-0 truncate">{member.name}</span>
+                      {candidate.kind === "member" ? (
+                        <MarkedAvatar name={candidate.name} src={characterById.get(candidate.character_id)?.avatar_url} size="sm" />
+                      ) : (
+                        <span aria-hidden className="flex size-6 items-center justify-center rounded-full bg-muted text-sm">@</span>
+                      )}
+                      <span className="min-w-0 truncate">{candidate.name}</span>
                     </button>
                   ))}
                 </div>
@@ -429,8 +440,8 @@ export function GroupConversationView({
         onSaved={(nextGroup) => {
           live?.setGroup(nextGroup);
           setGroup(nextGroup);
-          setMentionTargetId((current) => current && nextGroup.current_members.some((member) => member.character_id === current) ? current : null);
-          setMentionToken((current) => current && nextGroup.current_members.some((member) => member.character_id === current.characterId) ? current : null);
+          setMentionTargetId((current) => current === ALL_MEMBERS_TARGET || (current && nextGroup.current_members.some((member) => member.character_id === current)) ? current : null);
+          setMentionToken((current) => current && (current.characterId === ALL_MEMBERS_TARGET || nextGroup.current_members.some((member) => member.character_id === current.characterId)) ? current : null);
           setReplyId((current) => {
             if (current === null) return null;
             const quotedMessage = messages.find((message) => message.id === current);

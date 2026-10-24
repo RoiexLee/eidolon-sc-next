@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { GroupConversation, GroupMessage } from "@/lib/api";
-import { currentGroupMembers, groupAvatarMembers, groupMemberPatch, groupMentionAt, groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET, validGroupMemberCount } from "@/lib/groupChat";
+import { ALL_MEMBERS_TARGET, currentGroupMembers, groupAvatarMembers, groupMemberPatch, groupMentionAt, groupTitle, messageAuthor, messagePreview, messageText, replyTarget, ROUND_ROBIN_TARGET, validGroupMemberCount } from "@/lib/groupChat";
 
 const group: GroupConversation = {
   id: "g1",
@@ -46,6 +46,7 @@ describe("groupChat", () => {
 
   it("uses a non-empty select sentinel for the round-robin request", () => {
     expect(ROUND_ROBIN_TARGET).not.toBe("");
+    expect(ALL_MEMBERS_TARGET).not.toBe(ROUND_ROBIN_TARGET);
   });
 
   it("computes member changes in the selected order and enforces the 2–5 boundary", () => {

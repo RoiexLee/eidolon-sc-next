@@ -94,13 +94,14 @@ class GroupTurnEngine:
     async def turn(
         self,
         group: GroupConversation,
-        target: GroupMember,
+        target: GroupMember | None,
         turn: GroupTurn,
         text: str,
         llms: TurnLLMs,
         *,
         reply_to_message_id: int | None = None,
         mentions: Sequence[str] = (),
+        targets: Sequence[GroupMember] | None = None,
     ) -> AsyncGenerator[object, None]:
         text = text.strip()
         yield GroupUserSaid(text)
@@ -109,6 +110,15 @@ class GroupTurnEngine:
             yield GroupTurnError(TOO_LONG if text else BLANK)
             return
         try:
+            if targets is not None:
+                async for event in self._turn_all(
+                    group, targets, turn, text, llms,
+                    reply_to_message_id=reply_to_message_id,
+                    mentions=mentions,
+                ):
+                    yield event
+                return
+            assert target is not None
             history = await self._groups.messages(group.user_id, group.id)
             profile = await self._store.get_profile(group.user_id)
             prompt = self._prompt(group, target, history, text, profile, reply_to_message_id)
@@ -176,6 +186,73 @@ class GroupTurnEngine:
             log.exception("group turn failed in %s", group.id)
             await self._groups.fail_turn(turn.id)
             yield GroupTurnError(FAILED)
+
+    async def _turn_all(
+        self,
+        group: GroupConversation,
+        targets: Sequence[GroupMember],
+        turn: GroupTurn,
+        text: str,
+        llms: TurnLLMs,
+        *,
+        reply_to_message_id: int | None,
+        mentions: Sequence[str],
+    ) -> AsyncGenerator[object, None]:
+        if not targets:
+            await self._groups.fail_turn(turn.id)
+            yield GroupTurnError(FAILED)
+            return
+        profile = await self._store.get_profile(group.user_id)
+        messages: list[GroupMessage] = []
+        for target in targets:
+            try:
+                history = await self._groups.messages(group.user_id, group.id)
+                prompt = self._prompt(group, target, history, text, profile, reply_to_message_id)
+                reply = None
+                async for event in self._reply_events(prompt, target, llms):
+                    if isinstance(event, _ReplyComplete):
+                        reply = event.reply
+                    else:
+                        yield event
+                assert reply is not None
+                if not messages:
+                    _, character = await self._groups.finish_turn(
+                        turn.id, text, target, reply,
+                        reply_to_message_id=reply_to_message_id,
+                        mentions=mentions,
+                        finalize=False,
+                    )
+                    yield _GroupTurnPrimary(character)
+                else:
+                    character = await self._groups.append_character_message(
+                        turn.id, target, reply,
+                        reply_to_message_id=reply_to_message_id,
+                        mentions=mentions,
+                        finalize=False,
+                    )
+                messages.append(character)
+            except OwnKeyFailed as error:
+                log.warning("group all-member reply failed on the user's own key in %s: %s", group.id, error.service)
+                if not messages:
+                    await self._groups.fail_turn(turn.id)
+                    yield GroupTurnError(error.message)
+                else:
+                    await self._groups.complete_turn(turn.id)
+                    yield GroupTurnPartial(messages[0], error.message)
+                    yield GroupTurnDone(messages[0], turn.id, tuple(messages), True)
+                return
+            except Exception:
+                log.exception("group all-member reply failed in %s", group.id)
+                if not messages:
+                    await self._groups.fail_turn(turn.id)
+                    yield GroupTurnError(FAILED)
+                else:
+                    await self._groups.complete_turn(turn.id)
+                    yield GroupTurnPartial(messages[0], FAILED)
+                    yield GroupTurnDone(messages[0], turn.id, tuple(messages), True)
+                return
+        await self._groups.complete_turn(turn.id)
+        yield GroupTurnDone(messages[0], turn.id, tuple(messages), False)
 
     async def _reply_events(
         self,
