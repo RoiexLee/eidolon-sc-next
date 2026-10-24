@@ -12,7 +12,7 @@ import { copy } from "@/i18n";
 import { listGroups, type Character, type GroupConversation } from "@/lib/api";
 import { showTime } from "@/lib/callTime";
 import { arrangeConversations, dayOf, previewOf, type ListRow, type Preview } from "@/lib/conversationList";
-import { groupAvatarMembers, groupTitle } from "@/lib/groupChat";
+import { groupTitle } from "@/lib/groupChat";
 import { pin, setShown, unpin } from "@/lib/listPreferences";
 import { cn } from "@/lib/utils";
 import { herVars } from "@/theme/herVars";
@@ -25,6 +25,7 @@ import { useDirectory, type CallInList } from "./ConversationDirectory";
 import { ListFilter } from "./ListFilter";
 import { useCallTime } from "./useCallTime";
 import { GroupCreateDialog } from "./GroupCreateDialog";
+import { GroupAvatar } from "./GroupAvatar";
 
 const t = copy.conversationList;
 
@@ -141,6 +142,7 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
                   <li key={entry.group.id}>
                     <GroupRow
                       group={entry.group}
+                      characters={characters}
                       isSelected={entry.group.id === selectedGroupId}
                       onSelect={() => go(`/conversation/group/${entry.group.id}`)}
                     />
@@ -194,10 +196,12 @@ export function ConversationList({ selectedId, selectedGroupId }: { selectedId: 
 
 function GroupRow({
   group,
+  characters,
   isSelected,
   onSelect,
 }: {
   group: GroupConversation;
+  characters: readonly Character[];
   isSelected: boolean;
   onSelect: () => void;
 }) {
@@ -211,7 +215,7 @@ function GroupRow({
         isSelected ? "bg-muted" : "hover:bg-muted/60",
       )}
     >
-      <GroupAvatar group={group} />
+      <GroupAvatar group={group} characters={characters} size="list" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-row-name">{groupTitle(group)}</span>
         <span className="block truncate text-preview text-muted-foreground">
@@ -219,19 +223,6 @@ function GroupRow({
         </span>
       </span>
     </button>
-  );
-}
-
-function GroupAvatar({ group }: { group: GroupConversation }) {
-  const members = groupAvatarMembers(group);
-  return (
-    <span className="grid size-list-avatar shrink-0 grid-cols-2 grid-rows-2 overflow-hidden rounded-full bg-muted text-meta text-muted-foreground">
-      {members.map((member, index) => (
-        <span key={`${member.character_id}-${index}`} className="flex items-center justify-center">
-          {Array.from(member.name)[0]}
-        </span>
-      ))}
-    </span>
   );
 }
 
