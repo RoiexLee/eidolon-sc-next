@@ -1,6 +1,6 @@
 # 群组对话后续修复 22：群聊通话背景
 
-Status: draft
+Status: done
 
 ## 目标
 
@@ -17,3 +17,9 @@ Status: draft
 - 拨号、空闲 speaker 间隙和 speaker-ended 后都能看到群头像背景。
 - speaker-started 后角色背景出现；缺少角色背景时有头像回退。
 - 群头像自定义和成员变更在通话层同步。
+
+## 实现结果
+
+- `GroupAvatar` 增加铺满背景尺寸，支持自定义成员头像和拼贴头像统一作为装饰背景。
+- 群聊通话无 speaker、speaker 缺少图片和 speaker-ended 间隙显示群头像背景；有角色图片时继续显示角色背景。
+- 验证：前端 typecheck、群聊通话状态测试和 API 测试通过。

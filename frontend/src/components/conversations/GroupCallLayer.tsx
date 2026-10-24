@@ -80,6 +80,7 @@ function GroupCallLayer({
 }) {
   const { layer, call } = snapshot;
   const character = snapshot.speakerId ? characters.find((item) => item.id === snapshot.speakerId) : undefined;
+  const characterImage = character?.background_url ?? character?.avatar_url;
   const title = snapshot.group ? groupTitle(snapshot.group) : "群聊";
   const name = snapshot.speakerName || title;
   const ended = call.phase === "ended";
@@ -104,8 +105,14 @@ function GroupCallLayer({
         "transition-[translate,visibility] duration-410 ease-call",
       )}
     >
-      {character?.background_url || character?.avatar_url ? (
-        <img src={character.background_url ?? character.avatar_url ?? ""} alt="" aria-hidden className="pointer-events-none absolute inset-0 size-full object-cover opacity-70" />
+      {characterImage ? (
+        <img src={characterImage} alt="" aria-hidden className="pointer-events-none absolute inset-0 size-full object-cover opacity-70" />
+      ) : snapshot.group ? (
+        <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden opacity-70">
+          <div className="absolute -inset-1/4 blur-3xl">
+            <GroupAvatar group={snapshot.group} characters={characters} size="backdrop" />
+          </div>
+        </div>
       ) : null}
       <div aria-hidden className="pointer-events-none absolute inset-0 bg-linear-to-b from-black/25 to-her-call-shade" />
       {character && <ActiveSpeakerStand character={character} call={layer.call} collapsed={layer.collapsed} fullScreen={isFullScreen} />}
