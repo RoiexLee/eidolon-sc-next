@@ -135,10 +135,12 @@ function GroupCallLayer({
         ) : (
           <>
             <p role="status" className="text-center text-sm text-white/80">{snapshot.micNotice && t.micNotices[snapshot.micNotice]}</p>
-            {snapshot.line && <div className="w-full max-w-[34em] rounded-3xl bg-white/12 px-5 py-4 text-center backdrop-blur-md">
-              {snapshot.textOnly && snapshot.previousLine && <div className="mb-2 text-sm text-white/60"><Ja>{snapshot.previousLine.ja}</Ja>{snapshot.previousLine.zh && <p>{snapshot.previousLine.zh}</p>}</div>}
-              <p className="text-call-line leading-relaxed"><Ja>{snapshot.line.ja}</Ja></p>
-              {snapshot.line.zh && <p className="mt-1 text-sm text-white/80">{snapshot.line.zh}</p>}
+            {(snapshot.line || snapshot.hearing || snapshot.typed) && <div className="w-full max-w-[34em] rounded-3xl bg-white/12 px-5 py-4 text-center backdrop-blur-md">
+              {snapshot.line ? <>
+                {snapshot.textOnly && snapshot.previousLine && <div className="mb-2 text-sm text-white/60"><Ja>{snapshot.previousLine.ja}</Ja>{snapshot.previousLine.zh && <p>{snapshot.previousLine.zh}</p>}</div>}
+                <p className="text-call-line leading-relaxed"><Ja>{snapshot.line.ja}</Ja></p>
+                {snapshot.line.zh && <p className="mt-1 text-sm text-white/80">{snapshot.line.zh}</p>}
+              </> : !snapshot.typed && <p className="text-sm text-white/80">{snapshot.textOnly ? t.repliesInText : t.speakFreely}</p>}
               {snapshot.hearing && <p className="mt-3 text-sm text-white/80">{t.hearing(snapshot.hearing)}</p>}
               {snapshot.typed && <p className="mt-3 text-sm text-white/80">{t.typed(snapshot.typed)}</p>}
             </div>}
@@ -152,7 +154,7 @@ function GroupCallLayer({
           <Button type="submit" variant="call-solid" size="icon-call" aria-label={copy.conversation.send}><SendIcon aria-hidden /></Button>
         </form>
       ) : (
-        !ended && <footer className="relative flex justify-center px-4 pb-8"><div className="flex items-center gap-2 rounded-full bg-white/12 p-2 backdrop-blur-md"><Button variant="call-round" size="icon-call-dock" aria-label={snapshot.micMuted ? t.micUnmute : t.micMute} onClick={() => live.toggleMic()}><>{snapshot.micMuted ? <MicOffIcon aria-hidden /> : <MicIcon aria-hidden />}</></Button><Button variant="call-round" size="icon-call-dock" aria-label={t.switchMic} onClick={() => live.openMicPicker()}><MicSwitchIcon aria-hidden /></Button><Button ref={typeKey} variant="call-round" size="icon-call-dock" aria-label={t.type} onClick={() => live.openTyping()}><TypingIcon aria-hidden /></Button><Button variant="hangup" size="call-dock" onClick={() => void live.hangUp()}><HangUpIcon aria-hidden />{t.hangUp}</Button></div></footer>
+        !ended && <footer className="relative flex justify-center px-4 pb-8"><div className="flex items-center gap-2 rounded-full bg-white/12 p-2 backdrop-blur-md"><Button variant="call-round" size="icon-call-dock" aria-label={snapshot.micMuted ? t.micUnmute : t.micMute} aria-pressed={snapshot.micMuted} onClick={() => live.toggleMic()}><>{snapshot.micMuted ? <MicOffIcon aria-hidden /> : <MicIcon aria-hidden />}</></Button><Button variant="call-round" size="icon-call-dock" aria-label={t.switchMic} onClick={() => live.openMicPicker()}><MicSwitchIcon aria-hidden /></Button><Button ref={typeKey} variant="call-round" size="icon-call-dock" aria-label={t.type} onClick={() => live.openTyping()}><TypingIcon aria-hidden /></Button><Button variant="hangup" size="call-dock" onClick={() => void live.hangUp()}><HangUpIcon aria-hidden />{t.hangUp}</Button></div></footer>
       )}
     </section>
   );

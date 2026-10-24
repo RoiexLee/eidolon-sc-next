@@ -1,6 +1,6 @@
 # 群组对话后续修复 21：群聊通话控件与用户字幕
 
-Status: draft
+Status: done
 
 ## 目标
 
@@ -17,3 +17,9 @@ Status: draft
 - 静音后出现白底黑图标，再次点击恢复；读屏状态同步。
 - 发送文字后，在角色首个 delta 到达前仍能看到“你：…”；语音识别中的文本也可见。
 - 私人通话现有测试和视觉行为不回归。
+
+## 实现结果
+
+- 群聊通话静音键补齐 `aria-pressed`，复用 `call-round` 的白底黑图标按下态。
+- 群聊通话台词卡在用户识别/输入文本存在时即可显示，不再等待角色首个 delta。
+- 验证：`npm run typecheck`、`npm test -- --run src/lib/liveGroupConversation.test.ts` 通过。
