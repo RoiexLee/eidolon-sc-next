@@ -468,6 +468,7 @@ async def test_character_with_an_idol_and_a_default_outfit_has_a_stand_and_her_o
             "url": f"{STAND_ASSETS}/spine/idols/stand/1030010010/",
         },
         "outfits_url": f"{STAND_ASSETS}/outfits/1.json",
+        "format": "spine-3.6",
     }
     assert listed["kogane"]["stand"] is None  # no idol, no default outfit
 
@@ -492,6 +493,23 @@ async def test_character_missing_her_idol_or_her_default_outfit_has_no_stand(
 
 def add_raw(config: CharacterConfig, line: str) -> None:
     config.path.write_text(config.path.read_text(encoding="utf-8") + line + "\n", encoding="utf-8")
+
+
+def test_stand_format_must_name_a_known_engine(tmp_path: Path):
+    config = CharacterConfig(tmp_path).add("mano", "櫻木真乃", "a")
+    add_raw(config, 'stand_format = "pixi"')
+
+    with pytest.raises(CharacterConfigError, match="角色 mano 的 stand_format"):
+        load_characters(config.path)
+
+
+def test_character_with_live2d_stand_format_keeps_it(tmp_path: Path):
+    config = CharacterConfig(tmp_path).add("mafuyu", "朝比奈まふゆ", "a")
+    add_raw(config, 'stand_format = "live2d-cubism4"')
+
+    characters = load_characters(config.path)
+
+    assert characters["mafuyu"].stand_format == "live2d-cubism4"
 
 
 @pytest.mark.parametrize("value", ['"1"', "0", "1.5", "true"])

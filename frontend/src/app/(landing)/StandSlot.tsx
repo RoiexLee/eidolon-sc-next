@@ -51,6 +51,8 @@ export function StandSlot({
         <Stand
           outfits={[outfit]}
           framing={framing}
+          // 落地页是 SC 专属的视觉世界（ADR-0016），format 先写死；多作品落地页时从 character 数据带进来。
+          format="spine-3.6"
           isPaused={paused}
           entrance={still ? "fade" : "rise"}
           direction={speaking ? SPEAKING : LOOKING}

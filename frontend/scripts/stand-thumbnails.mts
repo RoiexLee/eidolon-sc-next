@@ -2,7 +2,7 @@
  * 衣装的缩略图（docs/deploy.md「立绘素材」）：给 `eidolon stand outfits` 写进整理目录的衣装清单里的每套衣装，
  * 渲染一张半身图，写到整理目录的 `thumbnails/<stand 或 stand_costume>/<enzaId>.png`。
  *
- * 用和通话层同一套播放代码：在无界面的 Chromium 里载入 `StandEngine.ts`（现场转成 JavaScript，不打包）和
+ * 用和通话层同一套播放代码：在无界面的 Chromium 里载入 `SpineStandEngine.ts`（现场转成 JavaScript，不打包）和
  * vendor 目录里的 spine runtime，按电脑「半身 ADV」的取景画平静的待机，让动画先走约 1 秒，避开待机表情开头的眨眼，
  * 再把画布截成透明背景的 PNG。已经有缩略图的衣装不再渲染（加 `--force` 全部重画），所以再次同步时缩略图不变，也不会重新上传。
  *
@@ -195,13 +195,13 @@ const PAGE = `<!doctype html>
 <body>
 <canvas></canvas>
 <script type="module">
-import { StandEngine } from "/src/components/conversations/stand/StandEngine";
+import { SpineStandEngine } from "/src/components/conversations/stand/SpineStandEngine";
 const canvas = document.querySelector("canvas");
 let engine = null;
 window.renderOutfit = async (id) => {
   // 同一块画布上换一个引擎，拿到的还是同一个 WebGL 上下文，不会越开越多。
   engine?.dispose();
-  engine = new StandEngine(canvas, window.spine, "waist");
+  engine = new SpineStandEngine(canvas, window.spine, "waist");
   await engine.load({ id, url: "/assets/spine/idols/" + id + "/" });
   await new Promise((resolve) => setTimeout(resolve, ${SETTLE_MS}));
 };

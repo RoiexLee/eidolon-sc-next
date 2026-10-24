@@ -17,6 +17,7 @@ import { herVars } from "@/theme/herVars";
 import { Ja } from "@/theme/Ja";
 
 import { Stand } from "./stand/Stand";
+import type { StandFormat } from "./stand/standEngine";
 import type { StandOutfits } from "./useStandOutfits";
 
 const t = copy.conversation.outfits;
@@ -30,6 +31,8 @@ type Props = {
   /** 她的印象色：浮层渲染到对话子树外面，在浮层内容上再注入一次（大预览铺她的壁纸，「穿这套」是她的 primary）。 */
   color: string;
   outfits: StandOutfits;
+  /** 她的立绘用哪套引擎（characters.toml 的 stand_format，随角色 API 下发）。 */
+  format: StandFormat;
 };
 
 /**
@@ -38,7 +41,7 @@ type Props = {
  * 卡名和「私服 / 演出」切换，正在预览的卡铺中性的 `bg-muted`。点卡片只是预览，
  * 点「穿这套」才记在这台设备上，下次打电话她就穿这套。
  */
-export function OutfitPicker({ isOpen, onOpenChange, isWide, isReducedMotion, color, outfits }: Props) {
+export function OutfitPicker({ isOpen, onOpenChange, isWide, isReducedMotion, color, outfits, format }: Props) {
   const { cards, worn } = outfits;
   // 还没点过卡片时预览她正在穿的那套；关上时忘掉点过的，下次打开又从正在穿的看起。
   const [pickedId, setPickedId] = useState<string | null>(null);
@@ -73,6 +76,7 @@ export function OutfitPicker({ isOpen, onOpenChange, isWide, isReducedMotion, co
           <Stand
             outfits={[previewed]}
             framing="full"
+            format={format}
             isPaused={false}
             entrance="fade"
             direction={CALM}

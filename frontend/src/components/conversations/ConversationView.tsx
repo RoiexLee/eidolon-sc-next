@@ -474,6 +474,7 @@ export function ConversationView({
           isReducedMotion={isReducedMotion}
           color={character.color}
           outfits={outfits}
+          format={character.stand?.format ?? "spine-3.6"}
         />
       )}
     </Frame>

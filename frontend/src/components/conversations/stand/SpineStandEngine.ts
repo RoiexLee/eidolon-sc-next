@@ -15,12 +15,7 @@ import type {
   TextureAtlas,
   TrackEntry,
 } from "./spineRuntime";
-
-/**
- * 取景（spec「渲染」）：手机「大立绘」贴着头顶、到膝；电脑「半身 ADV」贴着头顶、到腰；
- * 换衣装的大预览是全身。
- */
-export type Framing = "knees" | "waist" | "full";
+import { StandUnavailable, type Framing, type StandEngine } from "./standEngine";
 
 /** 取景的高度，占身体的比例（全身另算，见 `aim`）。 */
 const FRAMING_HEIGHT: Record<Exclude<Framing, "full">, number> = { knees: 0.85, waist: 0.66 };
@@ -39,9 +34,6 @@ const MOUTH_MIX_SECONDS = 0.1;
 const MAX_STEP_SECONDS = 0.1;
 
 const UNPACK_PREMULTIPLY_ALPHA_WEBGL = 0x9241;
-
-/** 这台设备上画不了立绘：浏览器不支持 WebGL。 */
-export class StandUnavailable extends Error {}
 
 /** 载入好的一套衣装：骨架、它的动画状态和这套衣装有哪些动画。 */
 type Pose = {
@@ -80,7 +72,7 @@ type Clip = { slot: Slot; end: SlotData; detached: boolean };
  * 剪裁不结束、预乘 alpha、上下文丢失后恢复、React 开发模式下同一块画布上重建引擎。像素比不超过 2、
  * 最多 60 帧，暂停时（通话层收起）不画。
  */
-export class StandEngine {
+export class SpineStandEngine implements StandEngine {
   private readonly gl: WebGLRenderingContext;
   private readonly renderer: SceneRenderer;
   private readonly assets: AssetManager;

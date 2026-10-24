@@ -12,6 +12,10 @@ mirror's `spine_manifest.json`) and the outfit her stand wears unless the user p
 another (`default_outfit`, e.g. `stand/1030010010`). The stands themselves are not
 committed: they are served from object storage (ADR-0003, revised 2026-09-30).
 
+Optionally, she also names which engine renders her stand (`stand_format`):
+`spine-3.6` for the original's Spine stands (the default) or `live2d-cubism4` for a
+Live2D model. The browser picks the engine by it.
+
 Optionally, she also has the other names the conversation list searches her by
 (`name_zh`, `name_kana`, `name_romaji`): her name as Chinese readers know it, its reading
 in hiragana and in romaji, given name after family name with a space between. Without
@@ -68,6 +72,9 @@ _BIRTHDAY = re.compile(r"([0-9]{2})-([0-9]{2})")
 _OUTFIT = re.compile(r"(stand|stand_costume)/[0-9]{10}")
 """An outfit: her everyday clothes on a card (`stand`) or its stage costume
 (`stand_costume`), and the card's ten-digit enzaId."""
+
+STAND_FORMATS = ("spine-3.6", "live2d-cubism4")
+"""The engines that can render her stand, as `stand_format` names them."""
 
 DRAFT_MARKER = "<!-- 人设草稿：由后台模型根据剧情生成，尚未校对。校对完成后删除这一行。 -->"
 
@@ -146,6 +153,9 @@ class Character:
     """The outfit her stand wears unless the user picks another, as `<category>/<enzaId>`:
     `stand/1030010010` is her everyday clothes on that card, `stand_costume/...` its stage
     costume. Its files are at `spine/idols/<category>/<enzaId>/` under the stand assets."""
+    stand_format: str = "spine-3.6"
+    """Which engine renders her stand (`stand_format`): `spine-3.6`, the original's Spine
+    stands, or `live2d-cubism4`, a Live2D model. The browser picks the engine by it."""
     greeting: Greeting | None = None
     """Her greeting on the landing page; None shows her there without one."""
     call_opener: CallOpener | None = None
@@ -277,6 +287,12 @@ def _parse_character(
             f"（enzaId 是十位数字），现在是 {default_outfit!r}"
         )
 
+    stand_format = entry.get("stand_format", "spine-3.6")
+    if stand_format not in STAND_FORMATS:
+        raise CharacterConfigError(
+            f"角色 {label} 的 stand_format 应为 spine-3.6 或 live2d-cubism4，现在是 {stand_format!r}"
+        )
+
     return Character(
         id=entry["id"],
         name=entry["name"],
@@ -293,6 +309,7 @@ def _parse_character(
         sheet_path=sheet_path,
         idol_id=idol_id,
         default_outfit=default_outfit,
+        stand_format=stand_format,
         greeting=_greeting(entry, label, readings),
         call_opener=_call_opener(entry, label, readings),
         name_zh=_other_name(entry, "name_zh", label),

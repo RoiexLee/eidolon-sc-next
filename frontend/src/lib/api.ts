@@ -32,7 +32,7 @@ export type Character = {
   /** Her birthday in the original, `MM-DD`; February 29 falls on February 28 in a year without it. */
   birthday: string;
   background_url: string | null;
-  /** Her Spine stand on the call layer; null (her call background alone) unless the deployment
+  /** Her stand on the call layer; null (her call background alone) unless the deployment
    * configures her idol, her default outfit and where the stands are served from. */
   stand: Stand | null;
   /** Her idol number in the original; the list comes in their order, those without one last. */
@@ -89,6 +89,8 @@ export type Stand = {
    * costume (either may be null), whose `url` and `thumbnail` are relative to the list
    * (docs/deploy.md「立绘素材」). */
   outfits_url: string;
+  /** Which engine renders her stand (characters.toml 的 `stand_format`). */
+  format: "spine-3.6" | "live2d-cubism4";
 };
 
 /** One outfit of her stand: `id` is `stand/<enzaId>` or `stand_costume/<enzaId>`, and `url` the

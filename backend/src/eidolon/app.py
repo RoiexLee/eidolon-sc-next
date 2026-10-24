@@ -193,6 +193,7 @@ def _stand(character: Character, assets_url: str | None) -> dict | None:
     return {
         "default_outfit": {"id": outfit, "url": f"{assets_url}/{outfit_path(outfit)}"},
         "outfits_url": f"{assets_url}/{list_path(character.idol_id)}",
+        "format": character.stand_format,
     }
 
 

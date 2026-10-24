@@ -6,13 +6,14 @@ import type { Outfit } from "@/lib/api";
 import type { StandDirection } from "@/lib/standAnimations";
 import { cn } from "@/lib/utils";
 
-import { loadSpineRuntime } from "./spineRuntime";
-import { StandEngine, type Framing } from "./StandEngine";
+import { createStandEngine, type Framing, type StandEngine, type StandFormat } from "./standEngine";
 
 type Props = {
   /** 依次试的衣装：选中的那套，再是默认衣装（`outfitsToTry`）。变了就在原地换上。 */
   outfits: readonly Outfit[];
   framing: Framing;
+  /** 她的立绘用哪套引擎（characters.toml 的 stand_format，随角色 API 下发）。挂载时定下，之后不变。 */
+  format: StandFormat;
   /** 通话层收起时暂停渲染，展开时从当前姿势接着画。 */
   isPaused: boolean;
   /** 到了之后怎么出现：手机「大立绘」从底部升起；电脑和减少动态效果时原地淡入。 */
@@ -39,6 +40,7 @@ type Props = {
 export function Stand({
   outfits,
   framing,
+  format,
   isPaused,
   entrance,
   direction,
@@ -56,7 +58,7 @@ export function Stand({
   const [phase, setPhase] = useState<"loading" | "shown" | "failed">("loading");
 
   // 引擎要等 runtime 和素材，晚于这几个 effect 创建：创建时按这里记下的最新取景、暂停状态和立绘指令来。
-  const current = useRef({ framing, isPaused, direction, isReducedMotion, maxPixelRatio, isStill });
+  const current = useRef({ framing, isPaused, direction, isReducedMotion, maxPixelRatio, isStill, format });
   const tried = useRef(onTried);
   useEffect(() => {
     tried.current = onTried;
@@ -78,21 +80,21 @@ export function Stand({
     engine.current?.direct(direction, isReducedMotion);
   }, [direction, isReducedMotion]);
 
-  // 引擎每次挂载只建一个：runtime 到了就建，之后换衣装都在它上面换。
+  // 引擎每次挂载只建一个：工厂按格式造好就接上，之后换衣装都在它上面换。
   useEffect(() => {
     const target = canvas.current;
     if (!target) return;
     let cancelled = false;
     let created: StandEngine | null = null;
-    loadSpineRuntime()
-      .then((spine) => {
+    createStandEngine(target, current.current.format, current.current.framing, current.current.maxPixelRatio)
+      .then((instance) => {
         if (cancelled) return;
-        created = new StandEngine(target, spine, current.current.framing, current.current.maxPixelRatio);
-        created.setStill(current.current.isStill);
-        created.setPaused(current.current.isPaused);
-        created.direct(current.current.direction, current.current.isReducedMotion);
-        engine.current = created;
-        setReady(created);
+        instance.setStill(current.current.isStill);
+        instance.setPaused(current.current.isPaused);
+        instance.direct(current.current.direction, current.current.isReducedMotion);
+        created = instance;
+        engine.current = instance;
+        setReady(instance);
       })
       .catch(() => {
         if (!cancelled) setPhase("failed");

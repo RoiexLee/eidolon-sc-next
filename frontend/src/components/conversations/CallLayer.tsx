@@ -56,6 +56,7 @@ import { Ja } from "@/theme/Ja";
 import { CueArrowIcon } from "./AffinityBadge";
 import { PhotoViewer } from "./PhotoViewer";
 import { Stand } from "./stand/Stand";
+import type { StandFormat } from "./stand/standEngine";
 import { useCallTime } from "./useCallTime";
 import { useProducerTimezone } from "./useProducerTimezone";
 
@@ -95,6 +96,8 @@ type Props = {
   standDirection: StandDirection;
   /** 立绘依次试的衣装：选中的那套，再是默认衣装；她没有立绘时用不上。 */
   standOutfits: readonly Outfit[];
+  /** 她的立绘用哪套引擎（characters.toml 的 stand_format）；她没有立绘时用不上。 */
+  format: StandFormat;
   onCollapse: () => void;
   onHangUp: () => void;
   onToggleMic: () => void;
@@ -171,6 +174,7 @@ export function LiveCallLayer({
       affinityCue={snapshot.affinityCue}
       standDirection={snapshot.stand}
       standOutfits={standOutfits}
+      format={character.stand?.format ?? "spine-3.6"}
       onCollapse={() => live.collapse()}
       onHangUp={() => void live.hangUp()}
       onToggleMic={() => live.toggleMic()}
@@ -369,7 +373,7 @@ function Backdrop({ character }: { character: Character }) {
  * 底部 50% 压一层到 call.deep 的渐变，台词卡和底栏落在衣服上也看得清。结束后立绘降到 40%。
  */
 function StandStage(props: Props) {
-  const { call, isCollapsed, isFullScreen, isReducedMotion, standOutfits, standDirection } = props;
+  const { call, isCollapsed, isFullScreen, isReducedMotion, standOutfits, standDirection, format } = props;
   return (
     <>
       <div
@@ -385,6 +389,7 @@ function StandStage(props: Props) {
           key={call.dial}
           outfits={standOutfits}
           framing={isFullScreen ? "knees" : "waist"}
+          format={format}
           isPaused={isCollapsed}
           entrance={isFullScreen && !isReducedMotion ? "rise" : "fade"}
           direction={standDirection}
